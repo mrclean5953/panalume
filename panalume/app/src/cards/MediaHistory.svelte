@@ -4,26 +4,25 @@
   export const meta = {
     type: 'media-history', name: 'Recently watched', icon: 'mdi:history', category: 'Media',
     size: { w: 480, h: 300 }, tap: 'none',
-    defaults: { title: 'Recently watched', entity: '', max: 8, poster: 'art', image: '', show_user: true, show_player: true },
+    defaults: { title: 'Recently watched', entities: [], entity: '', max: 8, poster: 'art', show_user: true, show_player: true },
     // Any sensor that carries recent plays in an `items` or `data` attribute (Tautulli history).
     autofill: () => ({
       // Only lists that look like plays (a title plus who / when / how much), so other sensors
       // with a list (e.g. Upcoming Media's `data`) aren't picked up.
-      entity: [...states.keys()].filter((id) => id.startsWith('sensor.')).find((id) => {
+      entities: [...states.keys()].filter((id) => id.startsWith('sensor.')).filter((id) => {
         const a = states.get(id)?.attributes || {};
         const list = Array.isArray(a.items) ? a.items : Array.isArray(a.data) ? a.data : null;
         const x = list?.find((r) => r && typeof r === 'object' && r.title);
         return !!x && ('user' in x || 'friendly_name' in x) && ('date' in x || 'percent_complete' in x || 'watched_status' in x);
-      }) || '',
+      }).sort().slice(0, 4),
     }),
     fields: [
-      { key: 'entity', label: 'Sensor', type: 'entity', domain: 'sensor', hint: "A sensor whose `items` (or `data`) attribute lists recent plays — Tautulli's `get_history` answer, raw or trimmed." },
+      { key: 'entities', label: 'Sensors', type: 'entities', domain: 'sensor', hint: "One or more sensors whose `items` (or `data`) attribute lists recent plays — Tautulli's `get_history` answer, raw or trimmed. A play seen by two sensors is listed once. The poster is whatever image URL a row carries; a bare server path needs a template sensor in Home Assistant, not a key in this card." },
       { key: 'title', label: 'Title (blank = hidden)', type: 'text' },
       { key: 'max', label: 'Most rows shown', type: 'number' },
       { key: 'show_user', label: 'Who watched', type: 'bool' },
       { key: 'show_player', label: 'Player', type: 'bool' },
       { key: 'poster', label: 'Poster', type: 'select', options: [{ value: 'art', label: 'Poster beside each row' }, { value: 'none', label: 'Icon only' }] },
-      { key: 'image', label: 'Poster URL', type: 'text', hint: 'Blank uses the picture the sensor already serves through Home Assistant. For Plex paths, give the proxy and put $thumb where the path goes, e.g. http://plex:8181/api/v2?cmd=pms_image_proxy&width=200&height=300&apikey=KEY&img=$thumb' },
     ],
   };
 </script>
@@ -73,14 +72,33 @@
     };
   }
 
-  const e = $derived(ent(props.entity));
+  // One sensor or several, merged into one list by when it was watched.
+  const ids = $derived(
+    [...(Array.isArray(props.entities) ? props.entities : []), props.entity]
+      .map((v) => String(t(v) || '').trim())
+      .filter(Boolean)
+      .filter((v, i, a) => a.indexOf(v) === i)
+  );
   const all = $derived.by(() => {
-    const a = e?.attributes || {};
-    const list = Array.isArray(a.items) ? a.items : Array.isArray(a.data) ? a.data : [];
-    return list.map(norm).sort((p, q) => q.watched - p.watched);
+    const seen = new Set();
+    const out = [];
+    for (const id of ids) {
+      const e = ent(id);
+      if (!e || e.state === 'unavailable') continue;
+      const a = e.attributes || {};
+      const list = Array.isArray(a.items) ? a.items : Array.isArray(a.data) ? a.data : [];
+      for (const x of list) {
+        const row = norm(x);
+        const key = `${row.title}|${row.subtitle}|${row.user}|${row.watched}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(row);
+      }
+    }
+    return out.sort((p, q) => q.watched - p.watched);
   });
   const rows = $derived(all.slice(0, Math.max(1, Number(props.max) || 8)));
-  const waiting = $derived(!props.entity || !e || e.state === 'unavailable');
+  const waiting = $derived(!ids.length);
 
   const midnight = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x.getTime(); };
   function when(ts) {
@@ -94,13 +112,12 @@
     return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
   }
   const icon = (r) => (r.media_type === 'track' ? 'mdi:music' : r.media_type === 'episode' ? 'mdi:television-classic' : 'mdi:movie-open');
-  // The picture the row carries, or none. A blank template leaves HA-served and absolute
-  // URLs alone; a template with $thumb takes a bare Plex path through a proxy that has the key.
+  // The picture the row carries, or none. The sensor publishes a URL the browser can fetch:
+  // HA serves it under /api, or an integration may give a full URL. A bare server path is not
+  // resolvable here, and the card does not ask for a token to make one - no keys in settings.
   const art = (path) => {
     const p = String(path || '').trim();
     if (!p || props.poster === 'none') return '';
-    const tpl = String(t(props.image) || '').trim();
-    if (tpl) return tpl.includes('$thumb') ? tpl.replace('$thumb', encodeURIComponent(p)) : tpl + encodeURIComponent(p);
     return p.startsWith('http') || p.startsWith('/api/') ? haImage(p) : '';
   };
   const pct = (r) => Math.max(0, Math.min(100, r.percent));

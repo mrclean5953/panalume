@@ -4,18 +4,17 @@
   export const meta = {
     type: 'media-activity', name: 'Media activity', icon: 'mdi:play-circle-outline', category: 'Media',
     size: { w: 480, h: 220 }, tap: 'none',
-    defaults: { title: 'Watching now', entity: '', poster: 'art', image: '', show_progress: true, show_quality: true },
+    defaults: { title: 'Watching now', entities: [], entity: '', poster: 'art', show_progress: true, show_quality: true },
     // Any sensor that carries the sessions in a `sessions` attribute (Tautulli via REST, or a template sensor built on it).
     autofill: () => ({
-      entity: [...states.keys()].find((id) => Array.isArray(states.get(id)?.attributes?.sessions)) || '',
+      entities: [...states.keys()].filter((id) => Array.isArray(states.get(id)?.attributes?.sessions)).sort().slice(0, 4),
     }),
     fields: [
-      { key: 'entity', label: 'Sensor', type: 'entity', domain: 'sensor', hint: 'A sensor whose `sessions` attribute lists what is playing — Tautulli\'s `get_activity` answer (raw or trimmed), one row per stream.' },
+      { key: 'entities', label: 'Sensors', type: 'entities', domain: 'sensor', hint: 'One or more sensors whose `sessions` attribute lists what is playing — Tautulli\'s `get_activity` answer (raw or trimmed) from each server. Streams seen by more than one sensor are shown once. The poster is whatever image URL a row carries; a server that reports a bare path needs a template sensor in Home Assistant to complete it, not a key in this card.' },
       { key: 'title', label: 'Title (blank = hidden)', type: 'text' },
       { key: 'show_progress', label: 'Progress and time left', type: 'bool' },
       { key: 'show_quality', label: 'Direct play / transcode and resolution', type: 'bool' },
       { key: 'poster', label: 'Poster', type: 'select', options: [{ value: 'art', label: 'Poster beside each row' }, { value: 'none', label: 'Icon only' }] },
-      { key: 'image', label: 'Poster URL', type: 'text', hint: 'Blank uses the picture the sensor already serves through Home Assistant. For Plex paths, give the proxy and put $thumb where the path goes, e.g. http://plex:8181/api/v2?cmd=pms_image_proxy&width=200&height=300&apikey=KEY&img=$thumb' },
     ],
   };
 </script>
@@ -64,17 +63,38 @@
     };
   }
 
-  const e = $derived(ent(props.entity));
-  const sessions = $derived((Array.isArray(e?.attributes?.sessions) ? e.attributes.sessions : []).map(norm));
-  const waiting = $derived(!props.entity || !e || e.state === 'unavailable');
+  // One sensor or several: two Plex servers, Tautulli and the Plex integration side by side.
+  const ids = $derived(
+    [...(Array.isArray(props.entities) ? props.entities : []), props.entity]
+      .map((v) => String(t(v) || '').trim())
+      .filter(Boolean)
+      .filter((v, i, a) => a.indexOf(v) === i)
+  );
+  const sessions = $derived.by(() => {
+    const seen = new Set();
+    const out = [];
+    for (const id of ids) {
+      const e = ent(id);
+      if (!e || e.state === 'unavailable') continue;
+      for (const s of Array.isArray(e.attributes?.sessions) ? e.attributes.sessions : []) {
+        const row = norm(s);
+        // The same stream reaching the card from two sensors is one row.
+        const key = `${row.title}|${row.subtitle}|${row.user}|${row.player}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(row);
+      }
+    }
+    return out;
+  });
+  const waiting = $derived(!ids.length);
   const icon = (s) => (s.media_type === 'track' ? 'mdi:music' : s.media_type === 'episode' ? 'mdi:television-classic' : 'mdi:movie-open');
-  // The picture the row carries, or none. A blank template leaves HA-served and absolute
-  // URLs alone; a template with $thumb takes a bare Plex path through a proxy that has the key.
+  // The picture the row carries, or none. The sensor publishes a URL the browser can fetch:
+  // HA serves it under /api, or an integration may give a full URL. A bare server path is not
+  // resolvable here, and the card does not ask for a token to make one - no keys in settings.
   const art = (path) => {
     const p = String(path || '').trim();
     if (!p || props.poster === 'none') return '';
-    const tpl = String(t(props.image) || '').trim();
-    if (tpl) return tpl.includes('$thumb') ? tpl.replace('$thumb', encodeURIComponent(p)) : tpl + encodeURIComponent(p);
     return p.startsWith('http') || p.startsWith('/api/') ? haImage(p) : '';
   };
   const pct = (s) => Math.max(0, Math.min(100, s.progress));
