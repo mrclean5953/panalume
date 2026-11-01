@@ -13,7 +13,7 @@
 </script>
 
 <script>
-  import Icon from '../components/Icon.svelte';
+  import ViewIcon from '../components/ViewIcon.svelte';
   import { app, setView } from '../lib/config.svelte.js';
   let { props, w = 0, h = 0 } = $props();
   // A wide, short nav card lays out horizontally whatever its setting (e.g. on phones).
@@ -24,11 +24,15 @@
 <nav class="nav {dir}" class:tiles data-stop>
   {#each app.config.views as v}
     <button class:sel={app.view === v.id} onclick={() => setView(v.id)}>
-      {#if props.show_icons !== false && v.icon}
-        {#if tiles}
-          <span class="tile"><Icon icon={v.icon} size="1.15em" /></span>
+      {#if props.show_icons !== false && (v.icon || v.image)}
+        {#if tiles && !v.image}
+          <span class="tile"><ViewIcon view={v} size="1.15em" /></span>
+        {:else if v.image}
+          <!-- An image is already a mark of its own: no tinted square behind it,
+               and its natural aspect kept so a wordmark is not forced square. -->
+          <span class="imgmark"><ViewIcon view={v} size="1.15em" /></span>
         {:else}
-          <Icon icon={v.icon} size="1.3em" />
+          <ViewIcon view={v} size="1.3em" />
         {/if}
       {/if}
       {#if props.show_names !== false}<span class="name">{v.name}</span>{/if}
@@ -58,6 +62,8 @@
   .tiles button.sel .tile :global(svg) { color: #0b0f16; }
   .tiles button.sel { background: none; }
   .tiles button:hover .tile { background: rgba(255,255,255,.14); }
+  /* An image mark keeps the tile's height so rows stay aligned, without the square. */
+  .imgmark { flex: none; display: inline-flex; align-items: center; justify-content: center; height: var(--tile); }
   .tiles button.sel:hover .tile { background: var(--accent); }
   /* On a bar, the tile sits over its label the way an Android bottom bar does;
      the label steps aside when the bar is too narrow to hold one per item. */

@@ -3,6 +3,7 @@
   import Editor from './components/Editor.svelte';
   import Popup from './components/Popup.svelte';
   import Icon from './components/Icon.svelte';
+  import ViewIcon from './components/ViewIcon.svelte';
   import { app, load, save, layout, setPanelSide, DEVICES, MODE_SHORT, detectDevice, setView, removeSelected, duplicateSelected, selectedPlacement, changed, undo, undoLast, selectionSet, ensureEditable, zoneList, groupSelected } from './lib/config.svelte.js';
   import { conn, toasts, watchEntities, states, subscribe } from './lib/ha.svelte.js';
   import { loadMoney } from './lib/money.svelte.js';
@@ -180,7 +181,7 @@
       <button class="vf" onclick={() => (viewsOpen = !viewsOpen)} aria-label="Views"><Icon icon={viewsOpen ? 'mdi:close' : 'mdi:menu'} size="1.1em" /></button>
       {#if viewsOpen}
         <div class="vlist">
-          {#each app.config.views as v (v.id)}<button class:on={app.view === v.id} onclick={() => { setView(v.id); viewsOpen = false; }}><Icon icon={v.icon || 'mdi:view-dashboard-outline'} size="1.1em" /> {v.name}</button>{/each}
+          {#each app.config.views as v (v.id)}<button class:on={app.view === v.id} onclick={() => { setView(v.id); viewsOpen = false; }}><ViewIcon view={v} size="1.1em" /> {v.name}</button>{/each}
         </div>
       {/if}
     </div>
