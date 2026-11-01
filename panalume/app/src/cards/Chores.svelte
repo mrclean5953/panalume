@@ -70,6 +70,25 @@
   });
 
   const items = (id) => lists[id] || [];
+  // Adding and removing chores from the card itself, confirmed on the row so a
+  // stray tap on a wall panel does not delete somebody's job for the day.
+  let drafts = $state({});
+  let pending = $state('');
+  const canAdd = (id) => !!(Number(states.get(id)?.attributes.supported_features || 0) & 1);
+  const canDel = (id) => !!(Number(states.get(id)?.attributes.supported_features || 0) & 2);
+
+  function addChore(id) {
+    const text = String(drafts[id] || '').trim();
+    if (!text || !canAdd(id)) return;
+    callService('todo', 'add_item', { item: text }, { entity_id: id });
+    drafts = { ...drafts, [id]: '' };
+  }
+  function removeChore(id, item) {
+    if (!canDel(id)) return;
+    callService('todo', 'remove_item', { item: item.uid || item.summary }, { entity_id: id });
+    pending = '';
+  }
+  const pkey = (id, item) => `${id}|${item.uid || item.summary}`;
   const open = (id) => items(id).filter((i) => i.status !== 'completed');
   const canTick = (id) => !!(Number(states.get(id)?.attributes.supported_features || 0) & 4);
 
@@ -139,10 +158,25 @@
           </div>
           <div class="list">
             {#each open(p.todo) as item (item.uid || item.summary)}
-              <button class="it" onclick={() => tick(p.todo, item)} disabled={!canTick(p.todo)} title={item.summary}>
-                <span class="box"></span>
-                <span class="tx">{item.summary}</span>
-              </button>
+              {#if pending === pkey(p.todo, item)}
+                <div class="row ask">
+                  <span class="tx">{item.summary}</span>
+                  <button class="yes" onclick={() => removeChore(p.todo, item)} title="Delete it">Delete</button>
+                  <button class="no" onclick={() => (pending = '')} title="Keep it"><Icon icon="mdi:close" size=".9em" /></button>
+                </div>
+              {:else}
+                <div class="row">
+                  <button class="it" onclick={() => tick(p.todo, item)} disabled={!canTick(p.todo)} title={item.summary}>
+                    <span class="box"></span>
+                    <span class="tx">{item.summary}</span>
+                  </button>
+                  {#if canDel(p.todo)}
+                    <button class="del" onclick={() => (pending = pkey(p.todo, item))} title="Remove this chore">
+                      <Icon icon="mdi:trash-can-outline" size=".9em" />
+                    </button>
+                  {/if}
+                </div>
+              {/if}
             {:else}
               {#if lists[p.todo]}
                 <div class="all"><Icon icon="mdi:check-all" size="1.05em" /><span>All done</span></div>
@@ -152,6 +186,20 @@
                 <div class="all load">No list picked</div>
               {/if}
             {/each}
+            {#if lists[p.todo] && canAdd(p.todo)}
+              <div class="adder">
+                <input
+                  class="in"
+                  value={drafts[p.todo] || ''}
+                  placeholder="Add a chore"
+                  oninput={(ev) => (drafts = { ...drafts, [p.todo]: ev.currentTarget.value })}
+                  onkeydown={(ev) => { if (ev.key === 'Enter') addChore(p.todo); }}
+                />
+                <button class="plus" onclick={() => addChore(p.todo)} disabled={!(drafts[p.todo] || '').trim()} title="Add">
+                  <Icon icon="mdi:plus" size="1em" />
+                </button>
+              </div>
+            {/if}
           </div>
         </section>
       {/each}
@@ -184,6 +232,19 @@
     container-type: size;
   }
   .head { display: flex; align-items: center; gap: 8px; font-weight: 600; flex: none; }
+  .row { display: flex; align-items: center; gap: 2px; min-width: 0; }
+  .row .it { flex: 1; min-width: 0; }
+  .del { flex: none; opacity: .45; background: none; border: 0; color: inherit; padding: 2px; cursor: pointer; }
+  .del:hover { opacity: 1; color: #ff8787; }
+  .row.ask { background: rgba(255, 107, 107, .12); border-radius: 8px; padding: 2px 4px; }
+  .row.ask .tx { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: .82em; }
+  .yes { flex: none; background: rgba(255, 107, 107, .22); color: #ffc9c9; border: 0; border-radius: 6px; padding: 2px 7px; font-size: .74em; cursor: pointer; }
+  .no { flex: none; background: none; border: 0; color: var(--muted); padding: 2px 4px; cursor: pointer; display: inline-flex; }
+  .adder { display: flex; align-items: center; gap: 3px; margin-top: auto; padding-top: 3px; }
+  .in { flex: 1; min-width: 0; background: rgba(255, 255, 255, .05); border: 1px solid rgba(255, 255, 255, .08); border-radius: 7px; color: inherit; font: inherit; font-size: .78em; padding: 3px 6px; }
+  .in::placeholder { color: var(--muted); }
+  .plus { flex: none; background: rgba(255, 255, 255, .08); border: 0; border-radius: 7px; color: inherit; padding: 3px 5px; display: inline-flex; cursor: pointer; }
+  .plus:disabled { opacity: .35; cursor: default; }
   .head :global(svg) { color: var(--accent); flex: none; }
   .t { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .n {
