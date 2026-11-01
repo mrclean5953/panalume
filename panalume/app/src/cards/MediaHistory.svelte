@@ -4,7 +4,7 @@
   export const meta = {
     type: 'media-history', name: 'Recently watched', icon: 'mdi:history', category: 'Media',
     size: { w: 480, h: 300 }, tap: 'none',
-    defaults: { title: 'Recently watched', entity: '', max: 8, show_user: true, show_player: true },
+    defaults: { title: 'Recently watched', entity: '', max: 8, poster: 'art', image: '', show_user: true, show_player: true },
     // Any sensor that carries recent plays in an `items` or `data` attribute (Tautulli history).
     autofill: () => ({
       // Only lists that look like plays (a title plus who / when / how much), so other sensors
@@ -22,6 +22,8 @@
       { key: 'max', label: 'Most rows shown', type: 'number' },
       { key: 'show_user', label: 'Who watched', type: 'bool' },
       { key: 'show_player', label: 'Player', type: 'bool' },
+      { key: 'poster', label: 'Poster', type: 'select', options: [{ value: 'art', label: 'Poster beside each row' }, { value: 'none', label: 'Icon only' }] },
+      { key: 'image', label: 'Poster URL', type: 'text', hint: 'Blank uses the picture the sensor already serves through Home Assistant. For Plex paths, give the proxy and put $thumb where the path goes, e.g. http://plex:8181/api/v2?cmd=pms_image_proxy&width=200&height=300&apikey=KEY&img=$thumb' },
     ],
   };
 </script>
@@ -32,6 +34,7 @@
   // sensor in front of them.
   import Icon from '../components/Icon.svelte';
   import { t, ent } from '../lib/tpl.js';
+  import { haImage } from '../lib/ha.svelte.js';
   let { props, h = 300 } = $props();
 
   const pad = (n) => String(Number(n) || 0).padStart(2, '0');
@@ -47,6 +50,7 @@
         watched: num(x.watched),
         percent: num(x.percent),
         duration: num(x.duration),
+        poster: x.poster || x.grandparent_thumb || x.parent_thumb || x.thumb || '',
         player: x.player || '',
         media_type: mt,
       };
@@ -63,6 +67,7 @@
       watched: num(x.date),
       percent: num(x.percent_complete),
       duration: num(x.duration),
+      poster: x.grandparent_thumb || x.parent_thumb || x.thumb || '',
       player: x.player || '',
       media_type: mt,
     };
@@ -89,6 +94,15 @@
     return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short' });
   }
   const icon = (r) => (r.media_type === 'track' ? 'mdi:music' : r.media_type === 'episode' ? 'mdi:television-classic' : 'mdi:movie-open');
+  // The picture the row carries, or none. A blank template leaves HA-served and absolute
+  // URLs alone; a template with $thumb takes a bare Plex path through a proxy that has the key.
+  const art = (path) => {
+    const p = String(path || '').trim();
+    if (!p || props.poster === 'none') return '';
+    const tpl = String(t(props.image) || '').trim();
+    if (tpl) return tpl.includes('$thumb') ? tpl.replace('$thumb', encodeURIComponent(p)) : tpl + encodeURIComponent(p);
+    return p.startsWith('http') || p.startsWith('/api/') ? haImage(p) : '';
+  };
   const pct = (r) => Math.max(0, Math.min(100, r.percent));
   const tight = $derived(h < 230);
 </script>
@@ -104,7 +118,11 @@
     <div class="rows">
       {#each rows as r, i (r.watched + r.title + i)}
         <div class="row">
-          <div class="ic"><Icon icon={icon(r)} size="1.15em" /></div>
+          {#if art(r.poster)}
+            <img class="art" src={art(r.poster)} alt="" loading="lazy" decoding="async" />
+          {:else}
+            <div class="ic"><Icon icon={icon(r)} size="1.15em" /></div>
+          {/if}
           <div class="main">
             <div class="line">
               <span class="t">{r.title}</span>
@@ -132,6 +150,7 @@
   .row { display: flex; align-items: center; gap: 11px; padding: 5px 0; min-width: 0; }
   .row + .row { border-top: 1px solid rgba(255,255,255,.06); }
   .ic { flex: none; width: 2em; height: 2em; border-radius: 50%; display: grid; place-items: center; background: rgba(255,255,255,.07); color: var(--muted); }
+  .art { flex: none; width: 2.1em; height: 3.1em; object-fit: cover; border-radius: 5px; background: rgba(255,255,255,.06); }
   .main { flex: 1; min-width: 0; }
   .line { display: flex; align-items: baseline; gap: 8px; }
   .t { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

@@ -4,7 +4,7 @@
   export const meta = {
     type: 'media-activity', name: 'Media activity', icon: 'mdi:play-circle-outline', category: 'Media',
     size: { w: 480, h: 220 }, tap: 'none',
-    defaults: { title: 'Watching now', entity: '', show_progress: true, show_quality: true },
+    defaults: { title: 'Watching now', entity: '', poster: 'art', image: '', show_progress: true, show_quality: true },
     // Any sensor that carries the sessions in a `sessions` attribute (Tautulli via REST, or a template sensor built on it).
     autofill: () => ({
       entity: [...states.keys()].find((id) => Array.isArray(states.get(id)?.attributes?.sessions)) || '',
@@ -14,6 +14,8 @@
       { key: 'title', label: 'Title (blank = hidden)', type: 'text' },
       { key: 'show_progress', label: 'Progress and time left', type: 'bool' },
       { key: 'show_quality', label: 'Direct play / transcode and resolution', type: 'bool' },
+      { key: 'poster', label: 'Poster', type: 'select', options: [{ value: 'art', label: 'Poster beside each row' }, { value: 'none', label: 'Icon only' }] },
+      { key: 'image', label: 'Poster URL', type: 'text', hint: 'Blank uses the picture the sensor already serves through Home Assistant. For Plex paths, give the proxy and put $thumb where the path goes, e.g. http://plex:8181/api/v2?cmd=pms_image_proxy&width=200&height=300&apikey=KEY&img=$thumb' },
     ],
   };
 </script>
@@ -25,6 +27,7 @@
   // sensor in front of them.
   import Icon from '../components/Icon.svelte';
   import { t, ent } from '../lib/tpl.js';
+  import { haImage } from '../lib/ha.svelte.js';
   let { props, h = 220 } = $props();
 
   const pad = (n) => String(Number(n) || 0).padStart(2, '0');
@@ -35,7 +38,7 @@
   function norm(s) {
     const mt = s.media_type || 'movie';
     if (s.progress != null && s.progress_percent == null) {
-      return { ...s, progress: num(s.progress), duration: num(s.duration), offset: num(s.offset) };
+      return { ...s, poster: s.poster || s.grandparent_thumb || s.parent_thumb || s.thumb || '', progress: num(s.progress), duration: num(s.duration), offset: num(s.offset) };
     }
     const title = mt === 'episode' ? (s.grandparent_title || s.title) : s.title;
     let sub = '';
@@ -51,6 +54,7 @@
       progress: num(s.progress_percent),
       duration: Math.round(num(s.duration) / 1000),
       offset: Math.round(num(s.view_offset) / 1000),
+      poster: s.grandparent_thumb || s.parent_thumb || s.thumb || '',
       player: s.player || '',
       product: s.product || '',
       platform: s.platform || '',
@@ -64,6 +68,15 @@
   const sessions = $derived((Array.isArray(e?.attributes?.sessions) ? e.attributes.sessions : []).map(norm));
   const waiting = $derived(!props.entity || !e || e.state === 'unavailable');
   const icon = (s) => (s.media_type === 'track' ? 'mdi:music' : s.media_type === 'episode' ? 'mdi:television-classic' : 'mdi:movie-open');
+  // The picture the row carries, or none. A blank template leaves HA-served and absolute
+  // URLs alone; a template with $thumb takes a bare Plex path through a proxy that has the key.
+  const art = (path) => {
+    const p = String(path || '').trim();
+    if (!p || props.poster === 'none') return '';
+    const tpl = String(t(props.image) || '').trim();
+    if (tpl) return tpl.includes('$thumb') ? tpl.replace('$thumb', encodeURIComponent(p)) : tpl + encodeURIComponent(p);
+    return p.startsWith('http') || p.startsWith('/api/') ? haImage(p) : '';
+  };
   const pct = (s) => Math.max(0, Math.min(100, s.progress));
   const left = (s) => {
     const m = Math.max(0, Math.round((s.duration - s.offset) / 60));
@@ -94,7 +107,11 @@
     <div class="rows" class:single={sessions.length === 1}>
       {#each sessions as s, i (i + s.user + s.title)}
         <div class="row" class:paused={s.state === 'paused'}>
-          <div class="ic"><Icon icon={icon(s)} size="1.35em" /></div>
+          {#if art(s.poster)}
+            <img class="art" src={art(s.poster)} alt="" loading="lazy" decoding="async" />
+          {:else}
+            <div class="ic"><Icon icon={icon(s)} size="1.35em" /></div>
+          {/if}
           <div class="main">
             <div class="line">
               <span class="t">{s.title}</span>
@@ -131,6 +148,8 @@
   .row { display: flex; gap: 12px; align-items: center; min-width: 0; }
   .row + .row { border-top: 1px solid rgba(255,255,255,.08); padding-top: 10px; }
   .ic { flex: none; width: 2.4em; height: 2.4em; border-radius: 50%; display: grid; place-items: center; background: rgba(255,255,255,.08); color: var(--accent); }
+  .art { flex: none; width: 2.4em; height: 3.5em; object-fit: cover; border-radius: 6px; background: rgba(255,255,255,.06); }
+  .single .art { width: 3.4em; height: 5em; }
   .paused .ic { color: var(--muted); }
   .main { flex: 1; min-width: 0; }
   .line { display: flex; align-items: baseline; gap: 8px; }
