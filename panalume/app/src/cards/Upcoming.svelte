@@ -88,6 +88,7 @@
           rating: String(raw.rating || ''),
           runtime: Number(raw.runtime) || 0,
           genres: String(raw.genres || ''),
+          fanart: String(raw.fanart || ''),
           summary: String(raw.summary || ''),
           link: String(raw.deep_link || ''),
           src,
@@ -101,6 +102,12 @@
     return out.filter((it) => !it.date || (it.date >= from && it.date < to)).slice(0, Math.max(1, Number(props.max) || 6));
   });
   const configured = $derived(ids.length > 0);
+  // A poster URL that 404s paints a broken-image glyph and nothing else — the
+  // picture is remembered per item and the tile falls back to its own artwork.
+  let failed = $state(new Set());
+  const backdrop = (it) => it.fanart || it.poster || '';
+  const showArt = (it) =>
+    !!it.poster && !failed.has(it.key) && (layout === 'posters' || it.poster.startsWith('/'));
 
   const midnight = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x.getTime(); };
   function dayLabel(d) {
@@ -161,9 +168,15 @@
         <a class="it" href={it.link || undefined} target={it.link ? '_blank' : undefined} rel="noopener"
            title={tip(it)} style="--src:{it.src.color}" aria-label={[it.title, whenLabel(it)].filter(Boolean).join(', ')}>
           <div class="art">
+            <!-- Fanart sits behind the poster, blurred and dimmed: a picture that
+                 fails to load leaves the title's colour, not a grey hole. -->
+            {#if backdrop(it)}
+              <div class="fan" style="background-image:url('{haImage(backdrop(it))}')" aria-hidden="true"></div>
+            {/if}
             <!-- Pictures from outside Home Assistant (e.g. TMDB) only with the Posters layout, which says so. -->
-            {#if it.poster && (layout === 'posters' || it.poster.startsWith('/'))}
-              <img src={haImage(it.poster)} alt="" loading="lazy" />
+            {#if showArt(it)}
+              <img src={haImage(it.poster)} alt="" loading="lazy"
+                   onerror={() => (failed = new Set([...failed, it.key]))} />
             {:else}
               <div class="blank"><Icon icon="mdi:movie-open-outline" size="1.6em" /></div>
             {/if}
@@ -198,8 +211,10 @@
   /* Posters: artwork fills the tile, words sit on a scrim at the bottom. */
   .posters .it { position: relative; flex-direction: column; justify-content: flex-end; background: rgba(255,255,255,.05); }
   .posters .art { position: absolute; inset: 0; }
-  .posters .art img { width: 100%; height: 100%; object-fit: cover; display: block; }
-  .posters .blank { width: 100%; height: 100%; display: grid; place-items: center; color: var(--muted); }
+  /* The backdrop is deliberately oversized so the blur has no visible edge. */
+  .posters .fan { position: absolute; inset: -18%; background-size: cover; background-position: center; filter: blur(20px) brightness(.35); }
+  .posters .art img { position: relative; z-index: 1; width: 100%; height: 100%; object-fit: cover; display: block; }
+  .posters .blank { position: relative; z-index: 1; width: 100%; height: 100%; display: grid; place-items: center; color: var(--muted); background: radial-gradient(120% 90% at 50% 12%, rgba(255,255,255,.08), transparent 72%); border: 1px solid rgba(255,255,255,.07); border-radius: 12px; }
   .posters .txt { position: relative; padding: 26px 9px 8px; background: linear-gradient(180deg, transparent, rgba(6,8,14,.55) 34%, rgba(6,8,14,.92)); }
   .posters .t { font-weight: 600; font-size: .92em; line-height: 1.2; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; text-shadow: 0 1px 2px rgba(0,0,0,.55); }
   .posters .s, .posters .d { color: rgba(255,255,255,.8); font-size: .78em; line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
