@@ -1,5 +1,12 @@
 *, *::before, *::after { box-sizing: border-box; }
-:root { --bar-h: 52px; } /* height of the editing toolbar docked along the bottom */
+:root {
+  --bar-h: 52px; /* height of the editing toolbar docked along the bottom */
+  --ease: cubic-bezier(.2, .8, .25, 1);
+  --ease-spring: cubic-bezier(.2, .9, .3, 1.25);
+  --dur-fast: 120ms;
+  --dur: 180ms;
+  --dur-slow: 600ms;
+}
 html { background: #0b0f17; }
 body {
   margin: 0; min-height: 100dvh; color: var(--text); font-family: var(--font);
@@ -19,3 +26,57 @@ input[type='checkbox'] { width: auto; accent-color: var(--accent); }
 ::-webkit-scrollbar { width: 8px; height: 8px; }
 ::-webkit-scrollbar-thumb { background: rgba(255,255,255,.15); border-radius: 4px; }
 ::-webkit-scrollbar-track { background: transparent; }
+
+/* ---- shared type scale -------------------------------------------------
+   Items 46 / 52 / 53 / 54. Any card may use these classes; they are the
+   board's one ladder, so a card does not invent its own sizes. */
+[data-card] .microcaps,
+.microcaps {
+  font-size: .68em;
+  font-weight: 650;
+  letter-spacing: .16em;
+  text-transform: uppercase;
+  color: var(--muted);
+  line-height: 1.2;
+}
+/* Numbers that sit under each other must not jitter as they change. */
+[data-card] .num,
+.num,
+[data-card] .val {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: 'tnum' 1;
+}
+/* One hero per page (item 47): the hero's number is twice body weight. */
+[data-card] .hero-num { font-size: 2.6em; font-weight: 700; line-height: 1; letter-spacing: -.02em; }
+/* Gradient numerals (item 23). */
+.grad-num {
+  background-image: linear-gradient(135deg, var(--grad-a, #ffffff) 0%, var(--grad-b, var(--accent)) 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  -webkit-text-fill-color: transparent;
+}
+
+/* ---- motion (items 56 / 59 / 60) ---- */
+@keyframes page-in {
+  from { opacity: 0; transform: translateY(10px) scale(.995); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes spring-in {
+  0% { opacity: 0; transform: translateY(24px) scale(.96); }
+  60% { opacity: 1; transform: translateY(-4px) scale(1.01); }
+  100% { opacity: 1; transform: none; }
+}
+
+/* Press feedback (item 17): 0.96 at 120ms, everywhere it can be tapped. */
+.press, [data-card] button { transition: transform var(--dur-fast) var(--ease), background-color var(--dur-fast) var(--ease); }
+.press:active, [data-card] button:active { transform: scale(.96); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: .001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: .001ms !important;
+    scroll-behavior: auto !important;
+  }
+}

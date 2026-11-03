@@ -1,9 +1,51 @@
 <script module>
-  import { states } from '../lib/ha.svelte.js';
+  import { states, send as haSend } from '../lib/ha.svelte.js';
+
+  // ---- motion (item 44) ---------------------------------------------------
+  // Which motion sensor belongs to which camera. Home Assistant knows: the
+  // sensor normally shares the camera's device, so its own related-entity list
+  // is asked once per camera. Nothing found means no badge — never an invented
+  // one. The answer is a module state so the dashboard re-subscribes to it.
+  let motionOf = $state({}); // camera id -> motion entity id ('' = looked, none)
+  const pending = new Set();
+  const looksMotion = (id) => id.startsWith('binary_sensor.') && (/_motion\b/.test(id) || /motion/i.test(id));
+
+  async function ensureMotion(camId) {
+    if (!camId || motionOf[camId] != null || pending.has(camId)) return;
+    pending.add(camId);
+    let found = '';
+    try {
+      const rel = await haSend({ type: 'search/related', item_type: 'entity', item_id: camId });
+      const list = Array.isArray(rel?.entity) ? rel.entity : [];
+      found = list.find(looksMotion) || '';
+    } catch {}
+    if (!found) {
+      // Fall back to a sibling already in the state map, matched on the camera's
+      // own words (driveway camera → "Driveway Camera Motion").
+      const words = new Set(String(camId.split('.')[1] || '').split('_').filter((w) => w && !/^(camera|cam|reolink|poe|duo|clear|\d+)$/.test(w)));
+      for (const id of states.keys()) {
+        if (!looksMotion(id)) continue;
+        const s = states.get(id);
+        if (s?.attributes?.device_class && s.attributes.device_class !== 'motion' && s.attributes.device_class !== 'moving') continue;
+        if ([...words].some((w) => id.includes(w))) { found = id; break; }
+      }
+    }
+    motionOf[camId] = found;
+    pending.delete(camId);
+  }
+
   export const meta = {
     type: 'camera', name: 'Camera', icon: 'mdi:cctv', category: 'Media',
     size: { w: 400, h: 240 }, tap: 'fullscreen',
     defaults: { entity: '', mode: 'snapshot', refresh: 5, fit: 'auto', show_name: true },
+    // The motion sensor isn't a setting, so tell the dashboard to watch it.
+    watch: (props) => {
+      const id = String(props.entity || '').trim();
+      const own = String(props.motion || '').trim();
+      if (/^camera\./.test(id)) ensureMotion(id);
+      const m = own || motionOf[id];
+      return m ? [m] : [];
+    },
     // The first camera that is actually there, rather than a wall of blanks.
     autofill: () => {
       const ids = [...states.keys()].filter((id) => id.startsWith('camera.') && states.get(id)?.state !== 'unavailable');
@@ -12,6 +54,7 @@
     fields: [
       { key: 'entity', label: 'Camera', type: 'entity', domain: ['camera', 'image'] },
       { key: 'name', label: 'Name', type: 'text' },
+      { key: 'motion', label: 'Motion sensor (blank = found on the camera’s device)', type: 'entity', domain: 'binary_sensor' },
       { key: 'show_name', label: 'Show name', type: 'bool' },
       { key: 'mode', label: 'Mode', type: 'select', options: [{ value: 'snapshot', label: 'Snapshot' }, { value: 'live', label: 'Live' }, { value: 'video', label: 'Video stream (for cameras whose pictures fail)' }] },
       { key: 'refresh', label: 'Snapshot refresh (s)', type: 'number' },
@@ -26,7 +69,7 @@
   import Icon from '../components/Icon.svelte';
   import { t, ent } from '../lib/tpl.js';
   import { name } from '../lib/entity.js';
-  import { haImage, send, callService, subscribe } from '../lib/ha.svelte.js';
+  import { haImage, send, callService, subscribe, history, conn } from '../lib/ha.svelte.js';
   let { props, w = 0, h = 0 } = $props();
   const e = $derived(ent(props.entity));
   // Just the id, so attribute updates (e.g. the rotating access token) don't restart streams.
@@ -35,6 +78,63 @@
   // so snapshots and live pictures fail. Those that can stream are switched to
   // HA's video stream (HLS, as HA's own dashboard plays it) after two failures.
   const canStream = $derived(((e?.attributes.supported_features ?? 0) & 2) === 2);
+
+  // ---- motion badge + last motion (item 44) -------------------------------
+  const motionId = $derived.by(() => {
+    const own = props.motion ? String(t(props.motion) ?? '').trim() : '';
+    return own || motionOf[camId] || '';
+  });
+  const motion = $derived(motionId ? ent(motionId) : null);
+  const motionOn = $derived(motion?.state === 'on');
+  let seen = 0; // newest motion time known (plain, so the effects don't loop)
+  let lastAt = $state(0); // what the card draws
+  let nowAt = $state(Date.now());
+  const mark = (t) => {
+    if (!Number.isFinite(t) || t <= seen) return;
+    seen = t;
+    lastAt = t;
+  };
+  // History seeds the last-motion time, so a card opened after the fact still
+  // knows when it happened rather than waiting for the next visitor.
+  $effect(() => {
+    const id = motionId;
+    seen = 0;
+    lastAt = 0;
+    if (!id || !conn.connected) return;
+    let alive = true;
+    history([id], 24)
+      .then((res) => {
+        if (!alive) return;
+        const rows = (res[id] || []).filter((p) => p.s === 'on');
+        const p = rows[rows.length - 1];
+        if (p) mark(((p.lc ?? p.lu) || 0) * 1000);
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+  });
+  $effect(() => {
+    if (motionOn) mark(Date.parse(motion.last_changed));
+  });
+  // The words age on their own: "4m ago" becomes "5m ago" without a state change.
+  $effect(() => {
+    if (!motionId) return;
+    const iv = setInterval(() => (nowAt = Date.now()), 15e3);
+    return () => clearInterval(iv);
+  });
+  const ago = (t) => {
+    const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+    if (s < 45) return 'just now';
+    const m = Math.round(s / 60);
+    if (m < 60) return `${m}m ago`;
+    const h = Math.round(m / 60);
+    return h < 24 ? `${h}h ago` : `${Math.round(h / 24)}d ago`;
+  };
+  const motionLine = $derived.by(() => {
+    if (!motion || /^(unavailable|unknown)$/.test(motion.state)) return '';
+    nowAt; // re-render on the timer
+    const at = motionOn ? Date.parse(motion.last_changed) : lastAt;
+    return Number.isFinite(at) && at ? `last motion ${ago(at)}` : '';
+  });
   let failed = $state(0);
   // What the camera can stream to a browser (HA's camera/capabilities):
   // 'web_rtc' (near-instant, what HA's own dashboard uses) and / or 'hls'.
@@ -265,7 +365,7 @@
   }
 </script>
 
-<div class="cam">
+<div class="cam" class:motion={motionOn}>
   {#if video}
     <video bind:this={vid} {muted} autoplay playsinline poster={camId ? `ha/api/camera_proxy/${camId}` : undefined} style="object-fit:{fit}" onloadedmetadata={(ev) => (ratio = ev.currentTarget.videoWidth / ev.currentTarget.videoHeight || 0)}></video>
     {#if vidErr}<div class="msg">{vidErr}</div>{:else if !playing}<div class="msg starting">Starting video…</div>{/if}
@@ -274,15 +374,31 @@
     {/if}
   {:else if shown}<img src={shown} alt="" style="object-fit:{fit}" class:broken onerror={() => { broken = true; failed++; }} onload={(ev) => { broken = false; ratio = ev.currentTarget.naturalWidth / ev.currentTarget.naturalHeight || 0; }} />{/if}
   {#if !e}<div class="msg">Pick a camera in the card's settings.</div>{:else if !video && (broken || (!shown && failed >= 2))}<div class="msg">No picture from this camera</div>{/if}
-  {#if props.show_name}<div class="lbl">{t(props.name) || name(e)}</div>{/if}
+  {#if props.show_name || motionLine}
+    <div class="lbl">
+      {#if props.show_name}<span class="nm">{t(props.name) || name(e)}</span>{/if}
+      {#if motionLine}<span class="lm">{motionLine}</span>{/if}
+    </div>
+  {/if}
+  {#if motionOn}
+    <div class="mo" role="status" aria-label="Motion detected"><span class="pip"></span>Motion</div>
+  {/if}
 </div>
 
 <style>
-  .cam { position: absolute; inset: 0; background: #000; overflow: hidden; border-radius: inherit; }
+  .cam { position: absolute; inset: 0; background: #000; overflow: hidden; border-radius: inherit; container-type: size; }
+  .cam.motion { box-shadow: inset 0 0 0 2px rgba(244, 63, 94, .6), inset 0 0 46px rgba(244, 63, 94, .22); }
   img, video { width: 100%; height: 100%; display: block; }
   img.broken { visibility: hidden; }
   .msg { position: absolute; inset: 0; display: grid; place-items: center; color: var(--muted); font-size: .85em; padding: 12px; text-align: center; }
   .msg.starting { place-items: end center; padding-bottom: 2.4em; text-shadow: 0 1px 4px #000; }
   .snd { position: absolute; right: 12px; bottom: 12px; z-index: 2; width: 44px; height: 44px; border-radius: 50%; border: 0; background: rgba(0,0,0,.5); color: #fff; display: grid; place-items: center; backdrop-filter: blur(6px); }
-  .lbl { position: absolute; left: 0; right: 0; bottom: 0; padding: 18px 14px 10px; background: linear-gradient(transparent, rgba(0,0,0,.6)); font-weight: 600; font-size: .9em; }
+  .lbl { position: absolute; left: 0; right: 0; bottom: 0; padding: 22px 14px 10px; background: linear-gradient(transparent, rgba(0,0,0,.66)); display: flex; flex-direction: column; gap: 1px; min-width: 0; }
+  .nm { font-weight: 600; font-size: .9em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .lm { font-size: .72em; color: rgba(255, 255, 255, .78); font-variant-numeric: tabular-nums; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mo { position: absolute; left: 10px; top: 10px; z-index: 3; display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px 4px 8px; border-radius: 999px; background: rgba(244, 63, 94, .94); color: #fff; font-size: .64em; font-weight: 700; letter-spacing: .12em; text-transform: uppercase; box-shadow: 0 2px 16px rgba(244, 63, 94, .55); }
+  .mo .pip { width: 6px; height: 6px; border-radius: 50%; background: #fff; animation: pip 1.6s ease-in-out infinite; }
+  @keyframes pip { 50% { opacity: .3; transform: scale(.65); } }
+  @media (prefers-reduced-motion: reduce) { .mo .pip { animation: none; } }
+  @container (max-height: 130px) { .lm { display: none; } }
 </style>

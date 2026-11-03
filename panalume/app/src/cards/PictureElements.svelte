@@ -22,7 +22,7 @@
   import Icon from '../components/Icon.svelte';
   import { t, ent } from '../lib/tpl.js';
   import { name as eName, stateText, entityIcon, isActive, lightColor, canToggle, toggle, domain, unavailable } from '../lib/entity.js';
-  import { haImage } from '../lib/ha.svelte.js';
+  import { haImage, callService } from '../lib/ha.svelte.js';
   import { app } from '../lib/config.svelte.js';
   let { props, w = 480, h = 320, editing = false } = $props();
 
@@ -70,6 +70,20 @@
     return own || '';
   };
   const said = (m, e) => [eName(e), stateText(e)].filter(Boolean).join(' · ') || String(m.entity || 'No entity');
+  // A room is "moving" when its own element is a motion binary sensor, or when
+  // the marker names one (motion: binary_sensor.hall_motion). Only a real 'on'
+  // state lights the room — never a guessed one.
+  const motionIdOf = (m, id, e) => {
+    const own = String(t(m.motion) ?? '').trim();
+    if (own) return own;
+    const dc = e?.attributes?.device_class;
+    return id && domain(id) === 'binary_sensor' && (dc === 'motion' || dc === 'moving') ? id : '';
+  };
+  const moving = (m, id, e) => {
+    const mid = motionIdOf(m, id, e);
+    if (!mid) return false;
+    return (mid === id ? e : ent(mid))?.state === 'on';
+  };
 
   function fire(m) {
     if (editing) return;
@@ -77,7 +91,13 @@
     if (!id) return;
     const e = ent(id);
     const act = m.action || 'more-info';
-    if (act === 'toggle' && e && (canToggle(id) || ['scene', 'script', 'button', 'input_button'].includes(domain(id)))) {
+    const d = domain(id);
+    // A light or a switch drawn on a floorplan is a switch, not a link: tapping
+    // it toggles it in place, the way the light cards do.
+    if (e && (d === 'light' || d === 'switch')) {
+      return void callService(d, e.state === 'on' ? 'turn_off' : 'turn_on', {}, { entity_id: id });
+    }
+    if (act === 'toggle' && e && (canToggle(id) || ['scene', 'script', 'button', 'input_button'].includes(d))) {
       return void toggle(e);
     }
     app.popup = { entity: id };
@@ -101,10 +121,13 @@
         {@const ic = iconOf(m, e)}
         {@const lb = labelOf(m, e)}
         {@const sz = size(m)}
+        {@const sw = !!id && (domain(id) === 'light' || domain(id) === 'switch')}
+        {@const mv = moving(m, id, e)}
         <button type="button" class="mk" class:on={live && isActive(e)} class:dead={!!id && !live}
-          class:blank={!id} class:edit={editing} disabled={editing && !id}
+          class:blank={!id} class:edit={editing} class:alert={mv} class:sw
+          disabled={editing && !id}
           style="left:{box.x + (pct(m.x, 50) / 100) * box.w}px; top:{box.y + (pct(m.y, 50) / 100) * box.h}px; --mc:{colourOf(m, e)}; --sz:{sz}px"
-          title={said(m, e)} aria-label={said(m, e)} onclick={() => fire(m)}>
+          title={said(m, e) + (sw ? ' · tap to switch' : '') + (mv ? ' · motion now' : '')} aria-label={said(m, e)} onclick={() => fire(m)}>
           <span class="ic"><Icon icon={ic} size="calc(var(--sz) * 0.62)" /></span>
           {#if lb}<span class="lb">{lb}</span>{/if}
         </button>
@@ -126,6 +149,7 @@
     cursor: pointer; -webkit-tap-highlight-color: transparent;
   }
   .ic {
+    position: relative;
     display: grid; place-items: center; flex: none;
     width: max(calc(var(--sz) * 1.5), 28px); height: max(calc(var(--sz) * 1.5), 28px);
     border-radius: 50%;
@@ -148,6 +172,30 @@
   .blank { display: none; }
   .blank.edit { display: flex; opacity: .75; }
   .blank.edit .ic { border-style: dashed; }
+
+  /* A light or switch you can tap straight on the floorplan (item 40). */
+  .mk.sw:active .ic { transform: scale(.94); }
+  .mk.sw .ic { transition: background .2s, color .2s, border-color .2s, box-shadow .2s, transform .12s; }
+
+  /* Motion in this room: a soft rose ring that pulses out, blue-free so it
+     reads against the amber "on" tint for colour-blind eyes (item 25). */
+  .mk.alert .ic {
+    border-color: rgba(244, 63, 94, .8);
+    box-shadow: 0 0 0 3px rgba(244, 63, 94, .22), 0 0 22px rgba(244, 63, 94, .55);
+  }
+  .mk.alert .ic::after {
+    content: ''; position: absolute; inset: -6px; border-radius: 50%;
+    border: 2px solid rgba(244, 63, 94, .62); opacity: .55;
+    animation: room-pulse 2.1s ease-out infinite; pointer-events: none;
+  }
+  @keyframes room-pulse {
+    0% { transform: scale(.86); opacity: .8; }
+    70% { transform: scale(1.42); opacity: 0; }
+    100% { transform: scale(1.42); opacity: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .mk.alert .ic::after { animation: none; opacity: .45; }
+  }
   /* A short card keeps the tiles and drops the words. */
   @container (max-height: 140px) { .lb { display: none; } }
 </style>

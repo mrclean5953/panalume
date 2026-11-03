@@ -32,7 +32,8 @@
     autofill,
     sections: [
       { key: 'picture', label: 'Model picture', section: 'picture' }, { key: 'layers', label: 'Layers', section: 'layers' }, { key: 'temps', label: 'Temperatures', section: 'temps' },
-      { key: 'filament', label: 'Filament', section: 'filament' }, { key: 'controls', label: 'Pause / stop', section: 'controls' }, { key: 'light', label: 'Light', section: 'light' }, { key: 'speed', label: 'Speed', section: 'speed' },
+      { key: 'filament', label: 'Filament', section: 'filament' }, { key: 'ink', label: 'Ink levels', section: 'ink' },
+      { key: 'controls', label: 'Pause / stop', section: 'controls' }, { key: 'light', label: 'Light', section: 'light' }, { key: 'speed', label: 'Speed', section: 'speed' },
     ],
     fields: [
       { key: 'name', label: 'Name', type: 'text' },
@@ -51,6 +52,7 @@
       { key: 'bed_target', label: 'Bed target', type: 'entity', domain: ['sensor', 'number'], section: 'temps' },
       { key: 'chamber', label: 'Chamber temperature', type: 'entity', domain: 'sensor', section: 'temps' },
       { key: 'filament', label: 'Filament in use (with a colour)', type: 'entity', domain: 'sensor', section: 'filament' },
+      { key: 'inks', label: 'Ink / toner cartridges (blank = found automatically)', type: 'entities', section: 'ink' },
       { key: 'pause', label: 'Pause button', type: 'entity', domain: 'button', section: 'controls' },
       { key: 'resume', label: 'Resume button', type: 'entity', domain: 'button', section: 'controls' },
       { key: 'stop', label: 'Stop button', type: 'entity', domain: 'button', section: 'controls' },
@@ -67,7 +69,8 @@
   import Icon from '../components/Icon.svelte';
   import { t, ent } from '../lib/tpl.js';
   import { formatNumber, toggle } from '../lib/entity.js';
-  import { callService, haImage } from '../lib/ha.svelte.js';
+  import { callService, haImage, states as liveStates } from '../lib/ha.svelte.js';
+  import { byFraction } from '../lib/design.svelte.js';
   import { clock } from '../lib/clock.svelte.js';
   let { props, w = 460, h = 260 } = $props();
   const show = (k) => !props.hide?.[k];
@@ -77,7 +80,7 @@
   const status = $derived(
     /^(running|printing)/.test(raw) ? 'printing' : /^paus/.test(raw) ? 'paused' : /^(prepare|init|slicing|heating|starting)/.test(raw) ? 'preparing'
     : /^(finish|complete|done)/.test(raw) ? 'finished' : /^(fail|error|cancel)/.test(raw) ? 'failed' : /^(offline|unavailable|unknown|closed)/.test(raw) ? 'offline' : 'idle');
-  const LOOK = { printing: ['Printing', '#4fb4ff'], paused: ['Paused', '#ffb547'], preparing: ['Getting ready', '#b48cff'], finished: ['Finished', '#5bd88f'], failed: ['Failed', '#ff6b6b'], offline: ['Offline', '#8a94a8'], idle: ['Idle', '#8a94a8'] };
+  const LOOK = { printing: ['Printing', '#4fb4ff'], paused: ['Paused', '#f59e0b'], preparing: ['Getting ready', '#b48cff'], finished: ['Finished', '#3b82f6'], failed: ['Failed', '#f43f5e'], offline: ['Offline', '#8a94a8'], idle: ['Idle', '#8a94a8'] };
   const [label, color] = $derived(LOOK[status]);
   const active = $derived(status === 'printing' || status === 'paused' || status === 'preparing');
   // Bambu's stage says what it's doing while getting ready ("heatbed preheating").
@@ -133,6 +136,71 @@
   const ringSize = $derived(small ? Math.min(h - 16, 64) : stacked ? Math.min(w - 60, h * 0.34, 200) : Math.min(h - 60, w * 0.42, 200));
   const speed = $derived(show('speed') && active && !(stacked && h < 500) ? ent(props.speed) : null);
   const R = 44, C = 2 * Math.PI * R;
+
+  // ---- ink / toner (item 43) ---------------------------------------------
+  // One small radial gauge per cartridge. The cartridges are found by name —
+  // Bambu Lab printers report filament trays instead and have none, an inkjet
+  // reports a sensor per colour. A card with no ink sensors draws no gauges.
+  const INK = /(\b(ink|toner|cartridge)\b|drum\s*unit)/i;
+  const INK_COLOR = /\b(cyan|magenta|yellow|photo ?black|matte ?black|black|gr[ae]y)\b/i;
+  const SWATCH = [
+    [/photo ?black/i, '#0f172a'], [/matte ?black/i, '#1f2937'], [/cyan/i, '#22d3ee'],
+    [/magenta/i, '#f472b6'], [/yellow/i, '#fbbf24'], [/black/i, '#111827'], [/gr[ae]y/i, '#94a3b8'],
+  ];
+  const swatchFor = (s) => SWATCH.find(([re]) => re.test(s))?.[1] || null;
+  const inkPct = (e) => {
+    if (!e || e.state === '' || /^(unavailable|unknown)$/i.test(e.state)) return null;
+    const v = Number(e.state);
+    if (!Number.isFinite(v) || v < 0) return null;
+    const u = String(e.attributes?.unit_of_measurement || '').toLowerCase();
+    if (u === '%') return Math.min(100, v);
+    if (v <= 1) return v * 100; // some integrations report a 0–1 fraction
+    return v <= 100 ? v : null;
+  };
+  const shortInk = (full, pfx) => {
+    const drop = new Set([...pfx.toLowerCase().split(/[\s_]+/), 'ink', 'toner', 'cartridge', 'level', 'remaining', 'supply', 'colour', 'color'].filter(Boolean));
+    const s = full.replace(/%/g, ' ').replace(/[-–—·]+/g, ' ').split(/\s+/)
+      .filter((w) => w && !drop.has(w.toLowerCase())).join(' ').trim();
+    return s || 'Ink';
+  };
+  const inkPrefix = $derived.by(() => {
+    const id = String(ent(props.status)?.entity_id || '');
+    return /^sensor\.(.+?)_(?:print_status|printing_status|printer_status|status)$/.exec(id)?.[1] || '';
+  });
+  const inks = $derived.by(() => {
+    if (!show('ink')) return [];
+    const explicit = Array.isArray(props.inks) ? props.inks.map((x) => String(t(x) ?? '').trim()).filter(Boolean) : [];
+    const own = [], other = [];
+    const seen = new Set();
+    const take = (id, e, bucket) => {
+      if (!e || seen.has(id)) return;
+      const pct = inkPct(e);
+      if (pct == null) return;
+      seen.add(id);
+      const full = String(e.attributes?.friendly_name || id);
+      const short = shortInk(full, inkPrefix);
+      bucket.push({ id, full, short, pct, frac: Math.max(0, Math.min(1, pct / 100)), sw: swatchFor(full + ' ' + id) });
+    };
+    if (explicit.length) {
+      for (const id of explicit) take(id, liveStates.get(id), own);
+    } else {
+      for (const [id, e] of liveStates) {
+        if (!e || !/^(sensor|number)\./.test(id)) continue;
+        const nm = String(e.attributes?.friendly_name || '');
+        const mine = !!inkPrefix && id.startsWith(id.startsWith('number.') ? `number.${inkPrefix}_` : `sensor.${inkPrefix}_`);
+        const named = INK.test(nm) || INK.test(id.replace(/^[a-z_]+\./, '').replace(/_/g, ' '));
+        if (!named && !(mine && INK_COLOR.test(nm + ' ' + id))) continue;
+        take(id, e, mine ? own : other);
+      }
+    }
+    const rank = (s) => {
+      const order = ['cyan', 'magenta', 'yellow', 'photo', 'matte', 'black', 'gr'];
+      const i = order.findIndex((k) => s.toLowerCase().startsWith(k));
+      return i < 0 ? 9 : i;
+    };
+    return (own.length ? own : other).sort((a, b) => rank(a.short) - rank(b.short) || a.full.localeCompare(b.full));
+  });
+  const IK = 2 * Math.PI * 18;
 </script>
 
 <div class="pr" class:small class:stacked class:printing={status === 'printing'} style="--c:{color}">
@@ -183,6 +251,22 @@
             {#if fil}<span class="tc" title="Filament">{#if fil.color}<i style="background:{fil.color}"></i>{/if}{fil.name}</span>{/if}
           </div>
         {/if}
+        {#if inks.length && h >= 186}
+          <div class="inks" class:many={inks.length > 4} role="list" aria-label="Ink levels">
+            {#each inks as k (k.id)}
+              <div class="ink" role="listitem" style="--ik:{byFraction(k.frac, .15, .4)}" title="{k.full} · {Math.round(k.pct)}%">
+                <div class="inr">
+                  <svg viewBox="0 0 44 44" aria-hidden="true">
+                    <circle cx="22" cy="22" r="18" class="itr" />
+                    <circle cx="22" cy="22" r="18" class="ifil" stroke-dasharray={IK} stroke-dashoffset={IK * (1 - k.frac)} />
+                  </svg>
+                  <span class="iv">{Math.round(k.pct)}<em>%</em></span>
+                </div>
+                <span class="ilb">{#if k.sw}<i style="background:{k.sw}"></i>{/if}{k.short}</span>
+              </div>
+            {/each}
+          </div>
+        {/if}
         {#if controls || (show('light') && props.light) || speed}
           <div class="btns" data-stop>
             {#if controls && status === 'paused' && props.resume}<button onclick={() => press(props.resume)}><Icon icon="mdi:play" size="1.1em" /> Resume</button>
@@ -211,7 +295,7 @@
 </div>
 
 <style>
-  .pr { position: relative; height: 100%; display: flex; flex-direction: column; gap: 8px; isolation: isolate; }
+  .pr { position: relative; height: 100%; display: flex; flex-direction: column; gap: 8px; isolation: isolate; container-type: size; }
   .glow { position: absolute; inset: calc(var(--pad) * -1); z-index: -1; background: radial-gradient(80% 90% at 15% 50%, color-mix(in srgb, var(--c) 16%, transparent), transparent 70%); pointer-events: none; transition: background .6s; }
   .head { display: flex; align-items: center; gap: 8px; min-width: 0; }
   .ic { width: 2em; height: 2em; border-radius: 50%; display: grid; place-items: center; background: color-mix(in srgb, var(--c) 22%, transparent); color: var(--c); flex: none; }
@@ -263,4 +347,23 @@
   .btns .stop { color: #ff8a8a; }
   .btns .stop.armed { background: rgba(255,107,107,.3); color: #fff; }
   .btns select { font-size: .8em; padding: 6px 8px; border-radius: 10px; background: rgba(255,255,255,.06); max-width: 120px; }
+
+  /* Ink / toner: a small partial ring per cartridge, coloured by level. */
+  .inks { display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 1px; overflow: hidden; }
+  .ink { display: flex; flex-direction: column; align-items: center; gap: 2px; width: min(38px, 8.4cqw); min-width: 26px; }
+  /* Five or more cartridges: smaller rings, no names, still one clean row. */
+  .inks.many { gap: 4px 7px; }
+  .inks.many .ink { width: min(28px, 6.2cqw); min-width: 20px; }
+  .inks.many .ilb { display: none; }
+  .inks.many .iv { font-size: .5em; }
+  .inks.many .iv em { font-size: .62em; }
+  .inr { position: relative; width: 100%; aspect-ratio: 1; }
+  .inr svg { width: 100%; height: 100%; transform: rotate(-90deg); display: block; }
+  .itr { fill: none; stroke: rgba(255,255,255,.1); stroke-width: 4.5; }
+  .ifil { fill: none; stroke: var(--ik); stroke-width: 4.5; stroke-linecap: round; transition: stroke-dashoffset .8s ease, stroke .5s; }
+  .iv { position: absolute; inset: 0; display: grid; place-items: center; font-size: .66em; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+  .iv em { font-style: normal; font-size: .66em; opacity: .65; margin-left: .5px; }
+  .ilb { display: inline-flex; align-items: center; gap: 3px; max-width: 100%; font-size: .5em; line-height: 1.2; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ilb i { width: .75em; height: .75em; border-radius: 2px; flex: none; box-shadow: 0 0 0 1px rgba(255,255,255,.3); }
+  @media (prefers-reduced-motion: reduce) { .ifil { transition: none; } }
 </style>

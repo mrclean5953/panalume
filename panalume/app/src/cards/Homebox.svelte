@@ -52,6 +52,7 @@
   import { t, ent } from '../lib/tpl.js';
   import { formatNumber, unavailable, relTime } from '../lib/entity.js';
   import { fmtMoney } from '../lib/money.svelte.js';
+  import { hueFor, hueWash } from '../lib/design.svelte.js';
 
   let { props, h = 300 } = $props();
   const show = (k) => !props.hide?.[k];
@@ -209,16 +210,38 @@
   const link = $derived(str(props.link) || (directOn ? url : ''));
   const blurb = $derived(str(props.title) || 'Homebox');
 
-  // Rows are one height and the list is measured, so the slice follows the cell
-  // instead of an estimate of the chrome above it.
-  const ROW = 21;
-  const GAP = 2;
+  // Recent additions are chips now (item 42): a wrapping row of small tinted
+  // pills, each with its quantity. They're packed against the measured width so
+  // the slice follows the cell instead of guessing how many fit.
+  const CHIP_H = 24;
+  const CHIP_GAP = 6;
   let listH = $state(0);
+  let chipsW = $state(0);
   let cardH = $state(h);
   const tight = $derived(cardH < 200);
-  const room = $derived(Math.max(0, Math.floor((listH + GAP) / (ROW + GAP))));
-  // One row for the "and N more" line only when there is more than one to show.
-  const shown = $derived(rows.slice(0, rows.length > room && room > 1 ? room - 1 : room));
+  const chipW = (r) => 20 + Math.min(160, String(r.name).length * 6.4) + (r.qty ? 18 : 0);
+  const packed = $derived.by(() => {
+    const width = Math.max(80, chipsW || 260);
+    const lines = [];
+    let line = [], used = 0;
+    for (const r of rows) {
+      const w = chipW(r);
+      if (line.length && used + w > width) { lines.push(line); line = []; used = 0; }
+      line.push(r);
+      used += w + CHIP_GAP;
+    }
+    if (line.length) lines.push(line);
+    return lines;
+  });
+  const rowCap = $derived(Math.max(1, Math.floor((listH + CHIP_GAP) / (CHIP_H + CHIP_GAP))));
+  const flat = $derived(packed.flat());
+  // One line is kept for "and N more" only when the list really overflows.
+  const keep = $derived.by(() => {
+    if (flat.length <= rowCap) return flat.length;
+    const lines = Math.max(1, rowCap - 1);
+    return packed.slice(0, lines).reduce((a, l) => a + l.length, 0);
+  });
+  const shown = $derived(flat.slice(0, keep));
   const rest = $derived(rows.length - shown.length);
 </script>
 
@@ -251,14 +274,15 @@
     </div>
 
     {#if show('recent') && rows.length}
-      <div class="rows" bind:clientHeight={listH}>
+      <div class="chips" bind:clientHeight={listH} bind:clientWidth={chipsW}>
         {#each shown as r, i (i + r.name)}
-          <div class="row">
-            <span class="rn">{r.name}</span>
-            <span class="rm">{[r.qty ? '×' + r.qty : '', r.where, r.when ? relTime(r.when) : ''].filter(Boolean).join(' · ')}</span>
-          </div>
+          <span class="ch" style="--h:{hueFor(r.name)}; --bg:{hueWash(r.name, 0.17)}"
+            title={[r.where, r.when ? relTime(r.when) : ''].filter(Boolean).join(' · ') || r.name}>
+            <span class="cn">{r.name}</span>
+            {#if r.qty}<span class="cq">{r.qty}</span>{/if}
+          </span>
         {/each}
-        {#if rest > 0 && room > 1}<div class="tail">and {rest} more</div>{/if}
+        {#if rest > 0}<span class="more">+{rest}</span>{/if}
       </div>
     {/if}
 
@@ -279,21 +303,31 @@
   .open { flex: none; color: var(--muted); display: inline-flex; }
   .open:hover { color: var(--accent); }
   .dot { flex: none; margin-left: auto; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
-  .dot.on { background: #4ade80; box-shadow: 0 0 0 3px rgba(74, 222, 128, 0.18); }
-  .dot.off { background: #f87171; }
+  .dot.on { background: #3b82f6; box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.2); }
+  .dot.off { background: #f43f5e; }
 
   .hero { flex: none; display: flex; align-items: baseline; gap: 7px; min-width: 0; }
   .hero.grow { flex: 1; align-items: center; min-height: 0; }
-  .big { font-size: min(2.5em, 34cqh, 26cqw); font-weight: 700; letter-spacing: -0.02em; line-height: 1.12; }
-  .lbl { color: var(--muted); font-size: 0.86em; }
+  .big { font-size: min(2.5em, 34cqh, 26cqw); font-weight: 700; letter-spacing: -0.02em; line-height: 1.12; font-variant-numeric: tabular-nums; }
+  .lbl { color: var(--muted); font-size: 0.7em; text-transform: uppercase; letter-spacing: 0.09em; }
   .loc { margin-left: auto; flex: none; display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 0.82em; font-variant-numeric: tabular-nums; }
   .ver { flex: none; color: var(--muted); opacity: 0.7; font-size: 0.72em; }
 
-  .rows { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 2px; overflow: hidden; }
-  .row { flex: none; display: flex; align-items: baseline; gap: 8px; height: 21px; min-width: 0; }
-  .rn { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: 0.9em; }
-  .rm { flex: none; color: var(--muted); font-size: 0.76em; white-space: nowrap; }
-  .tail { flex: none; color: var(--muted); font-size: 0.74em; height: 19px; }
+  /* Recently added: wrapping chips, each tinted by name (item 42). */
+  .chips { flex: 1; min-height: 0; display: flex; flex-wrap: wrap; align-content: flex-start; gap: 6px; overflow: hidden; }
+  .ch {
+    display: inline-flex; align-items: center; gap: 6px; height: 24px; max-width: 100%;
+    padding: 0 4px 0 10px; border-radius: 999px; background: var(--bg);
+    border: 1px solid color-mix(in srgb, var(--h) 34%, transparent);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, .05);
+  }
+  .cn { min-width: 0; font-size: .79em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cq {
+    flex: none; min-width: 1.5em; height: 1.45em; padding: 0 5px; border-radius: 999px;
+    display: grid; place-items: center; font-size: .72em; font-weight: 700;
+    font-variant-numeric: tabular-nums; background: color-mix(in srgb, var(--h) 34%, transparent);
+  }
+  .chips .more { align-self: center; color: var(--muted); font-size: .74em; font-variant-numeric: tabular-nums; padding: 0 3px; }
 
   .extra { flex: none; display: flex; align-items: center; gap: 8px; white-space: nowrap; overflow: hidden; }
   .chip { display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px; border-radius: 999px; background: rgba(255, 255, 255, 0.08); color: var(--muted); font-size: 0.76em; }
@@ -302,7 +336,6 @@
   .none { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--muted); font-size: 0.88em; text-align: center; }
 
   @container (max-width: 330px) {
-    .rm { display: none; }
     .lbl { display: none; }
   }
   .tight .lbl { display: none; }

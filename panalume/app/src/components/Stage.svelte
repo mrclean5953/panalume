@@ -566,7 +566,16 @@
   {/if}
   <main class="zone main" role="presentation" data-size="{L.width}px layout · edge of the canvas" style="width:{mainW}px;height:{mainH}px;zoom:{mainZ};{app.config.views.find((v) => v.id === app.view)?.background ? 'background:' + app.config.views.find((v) => v.id === app.view).background : ''}"
     onpointerdown={(e) => bgDown(e, app.view)} onpointermove={move} onpointerup={end}>
-    {@render zone(app.view, mainList)}
+    {#if app.editing}
+      {@render zone(app.view, mainList)}
+    {:else}
+      <!-- Item 56: a page change fades and lifts 180ms, so a tap lands as a
+           change of place rather than a hard cut. Keyed so the animation runs
+           on every switch, and skipped while editing. -->
+      {#key app.view}
+        <div class="page">{@render zone(app.view, mainList)}</div>
+      {/key}
+    {/if}
   </main>
 </div>
 
@@ -589,6 +598,9 @@
   .editing .main { outline: 1px dashed rgba(122,162,255,.35); outline-offset: -1px; }
   .editing .main::after { content: attr(data-size); position: absolute; right: 8px; bottom: 8px; font-size: 11px; color: var(--muted); pointer-events: none; }
   .place { position: absolute; }
+  /* The page wrapper is the containing block for its placements and carries the
+     page-change animation (item 56). */
+  .page { position: absolute; inset: 0; animation: page-in var(--dur) var(--ease); }
   .guide { position: absolute; left: 0; right: 0; height: 0; border-top: 1px solid #ff5fa2; z-index: 2000; pointer-events: none; }
   .guide.gx { top: 0; bottom: 0; left: auto; right: auto; width: 0; height: auto; border-top: 0; border-left: 1px solid #ff5fa2; }
   .same { position: absolute; z-index: 1999; pointer-events: none; border: 2px dashed #ff5fa2; border-radius: var(--radius); }

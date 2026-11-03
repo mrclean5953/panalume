@@ -31,9 +31,14 @@
   // Recently watched, newest first: what, who, when and how much of it. Reads a
   // sensor's history list, so it takes Tautulli's own rows or a trimmed template
   // sensor in front of them.
+  //
+  // Item 47: the most recent play is the card's one hero — its poster, title and
+  // numbers step up a size; everything below it is secondary. Item 32: rows zoom
+  // their artwork on pointer hover only.
   import Icon from '../components/Icon.svelte';
   import { t, ent } from '../lib/tpl.js';
   import { haImage } from '../lib/ha.svelte.js';
+  import { hueFor, hueWash } from '../lib/design.svelte.js';
   let { props, h = 300 } = $props();
 
   const pad = (n) => String(Number(n) || 0).padStart(2, '0');
@@ -99,6 +104,7 @@
   });
   const rows = $derived(all.slice(0, Math.max(1, Number(props.max) || 8)));
   const waiting = $derived(!ids.length);
+  const down = $derived(ids.length > 0 && ids.every((id) => ent(id)?.state === 'unavailable'));
 
   const midnight = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x.getTime(); };
   function when(ts) {
@@ -122,28 +128,33 @@
   };
   const pct = (r) => Math.max(0, Math.min(100, r.percent));
   const tight = $derived(h < 230);
+  // Item 46: the section is named in small caps, whether or not a title is set.
+  const headLabel = $derived(t(props.title) || 'Recently watched');
 </script>
 
-<div class="hist">
-  {#if props.title}<div class="head">{t(props.title)}</div>{/if}
+<div class="hist" class:tight>
+  {#if props.title !== ''}<div class="head microcaps">{headLabel}</div>{/if}
 
   {#if waiting}
     <div class="none"><Icon icon="mdi:history" size="1.8em" /><div>Pick a sensor with a history attribute.</div></div>
   {:else if !rows.length}
-    <div class="none"><Icon icon="mdi:movie-open-check-outline" size="1.8em" /><div>Nothing watched yet.</div></div>
+    <div class="none">
+      <Icon icon={down ? 'mdi:cloud-off-outline' : 'mdi:movie-open-check-outline'} size="1.8em" />
+      <div>{down ? 'Sensor unavailable.' : 'Nothing watched yet.'}</div>
+    </div>
   {:else}
     <div class="rows">
       {#each rows as r, i (r.watched + r.title + i)}
-        <div class="row">
+        <div class="row" class:lead={i === 0}>
           {#if art(r.poster)}
             <img class="art" src={art(r.poster)} alt="" loading="lazy" decoding="async" />
           {:else}
-            <div class="ic"><Icon icon={icon(r)} size="1.15em" /></div>
+            <div class="ic"><Icon icon={icon(r)} size={i === 0 ? '1.4em' : '1.15em'} /></div>
           {/if}
           <div class="main">
             <div class="line">
               <span class="t">{r.title}</span>
-              {#if props.show_user !== false}<span class="u">{r.user}</span>{/if}
+              {#if props.show_user !== false}<span class="u" style="--uh:{hueFor(r.user)};background:{hueWash(r.user, 0.15)}">{r.user}</span>{/if}
             </div>
             {#if r.subtitle}<div class="s">{r.subtitle}</div>{/if}
             {#if !tight}
@@ -152,7 +163,7 @@
           </div>
           <div class="side">
             <div class="when">{when(r.watched)}</div>
-            <div class="pct">{pct(r)}%{#if props.show_player !== false && r.player && !tight}{' · ' + r.player}{/if}</div>
+            <div class="pct"><span class="num">{pct(r)}%</span>{#if props.show_player !== false && r.player && !tight}{' · ' + r.player}{/if}</div>
           </div>
         </div>
       {/each}
@@ -161,17 +172,34 @@
 </div>
 
 <style>
-  .hist { height: 100%; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
-  .head { font-weight: 600; font-size: 1.05em; }
+  /* Item 60: size container — the lead row can be a size larger without the
+     eight rows under it overflowing a short card. */
+  .hist { height: 100%; display: flex; flex-direction: column; gap: min(8px, 2.4cqh); min-height: 0; container-type: size; }
+  .head { flex: none; }
   .rows { flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: auto; }
-  .row { display: flex; align-items: center; gap: 11px; padding: 5px 0; min-width: 0; }
+  .row { display: flex; align-items: center; gap: min(11px, 2.8cqw); padding: min(5px, 1.4cqh) 0; min-width: 0; }
   .row + .row { border-top: 1px solid rgba(255,255,255,.06); }
   .ic { flex: none; width: 2em; height: 2em; border-radius: 50%; display: grid; place-items: center; background: rgba(255,255,255,.07); color: var(--muted); }
-  .art { flex: none; width: 2.1em; height: 3.1em; object-fit: cover; border-radius: 5px; background: rgba(255,255,255,.06); }
+  .art { flex: none; width: min(2.1em, 6cqw); height: min(3.1em, 9cqh); object-fit: cover; border-radius: 5px; background: rgba(255,255,255,.06); transition: transform var(--dur) var(--ease); }
+
+  /* Item 47: the newest play is the hero of this card. */
+  .lead { padding-bottom: min(8px, 2cqh); }
+  .lead .art { width: min(3em, 9cqw); height: min(4.4em, 14cqh); border-radius: 8px; box-shadow: 0 6px 16px rgba(0,0,0,.4); }
+  .lead .ic { width: 2.8em; height: 2.8em; }
+  .lead .t { font-size: min(1.12em, 3.2cqw); }
+  .lead .bar { height: 5px; margin-top: min(7px, 1.8cqh); }
+
+  /* Item 32: artwork zooms inside its own rounded frame; pointer devices only. */
+  .row:focus-visible .art { transform: scale(1.06); }
+  @media (hover: hover) {
+    .row:hover .art { transform: scale(1.06); }
+  }
+
   .main { flex: 1; min-width: 0; }
   .line { display: flex; align-items: baseline; gap: 8px; }
   .t { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .u { color: var(--muted); font-size: .84em; white-space: nowrap; margin-left: auto; }
+  /* Item 21: a person keeps the colour they have everywhere else on the board. */
+  .u { color: var(--uh, var(--muted)); font-size: .76em; font-weight: 600; white-space: nowrap; margin-left: auto; padding: 1px 7px; border-radius: 999px; }
   .s { color: var(--muted); font-size: .86em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .bar { height: 4px; border-radius: 2px; background: rgba(255,255,255,.14); margin-top: 5px; overflow: hidden; }
   .fill { height: 100%; background: var(--accent); border-radius: 2px; }
@@ -179,4 +207,8 @@
   .when { font-size: .84em; color: var(--muted); white-space: nowrap; }
   .pct { font-size: .8em; color: var(--muted); opacity: .9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .none { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--muted); font-size: .9em; text-align: center; }
+
+  /* Item 52: dates, percentages and episode numbers hold their column. */
+  .num, .when, .pct, .s { font-variant-numeric: tabular-nums; font-feature-settings: 'tnum' 1; }
+  .tight .lead .art { width: 2.4em; height: 3.5em; }
 </style>

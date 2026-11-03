@@ -44,6 +44,7 @@
   import { t, ent } from '../lib/tpl.js';
   import { formatNumber } from '../lib/entity.js';
   import { states } from '../lib/ha.svelte.js';
+  import { STATUS } from '../lib/design.svelte.js';
   import { useHistory } from '../lib/history.svelte.js';
   let { props, w = 400, h = 260 } = $props();
   const show = (k) => !props.hide?.[k];
@@ -98,7 +99,9 @@
     const mins = Math.round((kwh / kw) * 60);
     return { text: hm(mins), at: clock(mins), label: charging ? 'until full' : reserve ? `until ${reserve}%` : 'until empty' };
   });
-  const color = $derived(soc == null ? '#8a94a8' : soc <= Math.max(15, reserve) ? '#ff7a90' : soc < 40 ? '#ffc861' : '#5bd88f');
+  // Item 25: blue when healthy, amber near the floor, rose under it — green
+  // and red are indistinguishable with deuteranopia.
+  const color = $derived(soc == null ? 'var(--muted)' : soc <= Math.max(15, reserve) ? STATUS.bad : soc < 40 ? STATUS.warn : STATUS.good);
   const statusText = $derived.by(() => {
     const s = ent(props.status)?.state;
     if (!s || s === 'unknown') return idle ? 'Idle' : charging ? 'Charging' : 'Discharging';
@@ -164,8 +167,8 @@
   .head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
   .title { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .chip { display: inline-flex; align-items: center; gap: 4px; font-size: .75em; font-weight: 600; padding: 3px 9px; border-radius: 10px; background: rgba(255,255,255,.07); color: var(--muted); white-space: nowrap; }
-  .chip.chg { background: rgba(91,216,143,.16); color: #5bd88f; }
-  .chip.dis { background: rgba(255,200,97,.16); color: #ffc861; }
+  .chip.chg { background: rgba(59,130,246,.16); color: #3b82f6; }
+  .chip.dis { background: rgba(245,158,11,.16); color: #f59e0b; }
   .main { flex: 1; min-height: 0; display: flex; gap: 18px; align-items: center; overflow: hidden; }
   .cell { height: 100%; max-height: 160px; aspect-ratio: .55; display: flex; flex-direction: column; align-items: center; flex: none; }
   .cap { width: 34%; height: 6%; min-height: 5px; border-radius: 4px 4px 0 0; background: rgba(255,255,255,.18); }
@@ -175,14 +178,14 @@
   .anim:not(.up) .fill::after { animation-direction: reverse; }
   @keyframes flow { from { background-position: 0 100%; } to { background-position: 0 -100%; } }
   .res { position: absolute; left: 0; right: 0; border-top: 2px dashed rgba(255,255,255,.55); }
-  .pct { position: absolute; inset: 0; display: grid; place-items: center; font-size: 1.5em; font-weight: 700; text-shadow: 0 1px 6px rgba(0,0,0,.5); }
+  .pct { position: absolute; inset: 0; display: grid; place-items: center; font-size: 1.5em; font-weight: 700; text-shadow: 0 1px 6px rgba(0,0,0,.5); font-variant-numeric: tabular-nums; }
   .pct small { font-size: .55em; }
   .info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
-  .big { font-size: 2.2em; font-weight: 600; letter-spacing: -.02em; line-height: 1; }
+  .big { font-size: 2.2em; font-weight: 600; letter-spacing: -.02em; line-height: 1; font-variant-numeric: tabular-nums; }
   .big small { margin-left: .15em; font-size: .45em; color: var(--muted); font-weight: 500; }
   .dim { color: var(--muted); font-size: .85em; }
   .pw { font-weight: 600; margin-top: 4px; }
-  .pw.chg { color: #5bd88f; } .pw.dis { color: #ffc861; }
+  .pw.chg { color: #3b82f6; } .pw.dis { color: #f59e0b; }
   .eta { display: flex; align-items: center; gap: 5px; font-size: .9em; }
   .stats { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 4px; font-size: .8em; color: var(--muted); }
   .stats span { display: inline-flex; align-items: center; gap: 4px; }
