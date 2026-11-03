@@ -240,7 +240,9 @@
   .bw { margin-left: auto; flex: none; display: inline-flex; align-items: center; gap: 4px; color: var(--muted); font-size: 0.8em; font-weight: 500; }
 
   .rows { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 6px; overflow: hidden; }
-  .rows.roomy { justify-content: center; }
+  /* Rows start at the top of the card. Centring them left a dead band above the
+     first stream whenever the card was taller than its contents. */
+  .rows.roomy { justify-content: flex-start; }
   .row { flex: none; display: flex; gap: 10px; align-items: center; height: 46px; min-width: 0; }
   .ic { flex: none; width: 2.1em; height: 2.1em; border-radius: 50%; display: grid; place-items: center; background: rgba(255, 255, 255, 0.08); color: var(--accent); }
   .paused .ic { color: var(--muted); }
