@@ -212,7 +212,7 @@
   .posters .it { position: relative; flex-direction: column; justify-content: flex-end; background: rgba(255,255,255,.05); }
   .posters .art { position: absolute; inset: 0; }
   /* The backdrop is deliberately oversized so the blur has no visible edge. */
-  .posters .fan { position: absolute; inset: -18%; background-size: cover; background-position: center; filter: blur(20px) brightness(.35); }
+  .posters .fan { position: absolute; inset: -18%; background-size: cover; background-position: center; filter: blur(20px) brightness(.42) saturate(1.5); }
   .posters .art img { position: relative; z-index: 1; width: 100%; height: 100%; object-fit: cover; display: block; }
   .posters .blank { position: relative; z-index: 1; width: 100%; height: 100%; display: grid; place-items: center; color: var(--muted); background: radial-gradient(120% 90% at 50% 12%, rgba(255,255,255,.08), transparent 72%); border: 1px solid rgba(255,255,255,.07); border-radius: 12px; }
   .posters .txt { position: relative; padding: 26px 9px 8px; background: linear-gradient(180deg, transparent, rgba(6,8,14,.55) 34%, rgba(6,8,14,.92)); }
