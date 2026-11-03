@@ -24,9 +24,15 @@
   // whether the server is transcoding. Reads a sensor's `sessions` attribute, so
   // it works with Tautulli's own session objects and with a trimmed template
   // sensor in front of them.
+  //
+  // Item 33: a second row of "continue watching" poster tiles for the streams the
+  // sensor still holds that are paused partway through — it is fed by the same
+  // `sessions` attribute, never invented, and the whole row disappears when
+  // nothing is half-watched.
   import Icon from '../components/Icon.svelte';
   import { t, ent } from '../lib/tpl.js';
   import { haImage } from '../lib/ha.svelte.js';
+  import { hueFor, hueWash, mmss } from '../lib/design.svelte.js';
   let { props, h = 220 } = $props();
 
   const pad = (n) => String(Number(n) || 0).padStart(2, '0');
@@ -37,7 +43,15 @@
   function norm(s) {
     const mt = s.media_type || 'movie';
     if (s.progress != null && s.progress_percent == null) {
-      return { ...s, poster: s.poster || s.grandparent_thumb || s.parent_thumb || s.thumb || '', progress: num(s.progress), duration: num(s.duration), offset: num(s.offset) };
+      return {
+        ...s,
+        title: s.title || s.grandparent_title || 'Unknown',
+        poster: s.poster || s.grandparent_thumb || s.parent_thumb || s.thumb || '',
+        progress: num(s.progress),
+        duration: num(s.duration),
+        offset: num(s.offset),
+        ts: num(s.last_played ?? s.last_viewed ?? s.updated ?? 0),
+      };
     }
     const title = mt === 'episode' ? (s.grandparent_title || s.title) : s.title;
     let sub = '';
@@ -60,6 +74,7 @@
       decision: s.transcode_decision || 'direct play',
       resolution: s.stream_video_resolution || s.video_full_resolution || '',
       bandwidth: num(s.bandwidth),
+      ts: num(s.last_played ?? s.last_viewed ?? s.updated ?? 0),
     };
   }
 
@@ -87,6 +102,20 @@
     }
     return out;
   });
+
+  // Half-watched: past the opening titles, short of the credits.
+  const partial = (s) => s.progress > 1 && s.progress < 95;
+  // A paused stream belongs in the continue row, not twice in the card.
+  const cont = $derived(
+    sessions
+      .filter((s) => s.state === 'paused' && partial(s))
+      // Most recently played first; sensors that publish no timestamp keep the
+      // order they arrived in (merge sort is stable), which is newest first.
+      .sort((a, b) => (b.ts || 0) - (a.ts || 0))
+      .slice(0, 12)
+  );
+  const live = $derived(sessions.filter((s) => !(s.state === 'paused' && partial(s))));
+
   const waiting = $derived(!ids.length);
   const icon = (s) => (s.media_type === 'track' ? 'mdi:music' : s.media_type === 'episode' ? 'mdi:television-classic' : 'mdi:movie-open');
   // The picture the row carries, or none. The sensor publishes a URL the browser can fetch:
@@ -103,78 +132,123 @@
     if (!s.duration) return '';
     return m >= 60 ? `${Math.floor(m / 60)} h ${m % 60} min left` : `${m} min left`;
   };
+  // The continue tile's one numeral: what is left, in a column that never jitters.
+  const shortLeft = (s) => {
+    const sec = Math.max(0, s.duration - s.offset);
+    if (!s.duration) return '';
+    return sec >= 3600 ? `${Math.floor(sec / 3600)}h ${pad(Math.floor((sec % 3600) / 60))}m` : mmss(sec);
+  };
   const quality = (s) => {
     if (s.decision === 'transcode') return { label: 'Transcode', tone: 'warn' };
     if (s.decision === 'copy' || s.decision === 'direct stream') return { label: 'Direct stream', tone: 'ok' };
     return { label: 'Direct play', tone: 'good' };
   };
   const tight = $derived(h < 190);
+  // Item 46: the card's sections are named, in small caps, from the top.
+  const headLabel = $derived(t(props.title) || 'Watching now');
 </script>
 
-<div class="act">
-  {#if props.title && !tight}
+<div class="act" class:tight class:hascont={cont.length > 0}>
+  {#if props.title !== '' && !tight}
     <div class="head">
-      <span>{t(props.title)}</span>
-      {#if sessions.length}<span class="count">{sessions.length}</span>{/if}
+      <span class="microcaps">{headLabel}</span>
+      {#if live.length}<span class="count num">{live.length}</span>{/if}
     </div>
   {/if}
 
   {#if waiting}
     <div class="none"><Icon icon="mdi:television-off" size="1.8em" /><div>Pick a sensor with a sessions attribute.</div></div>
-  {:else if !sessions.length}
+  {:else if !live.length && !cont.length}
     <div class="none"><Icon icon="mdi:television-off" size="1.8em" /><div>Nothing playing.</div></div>
   {:else}
-    <div class="rows" class:single={sessions.length === 1}>
-      {#each sessions as s, i (i + s.user + s.title)}
-        <div class="row" class:paused={s.state === 'paused'}>
-          {#if art(s.poster)}
-            <img class="art" src={art(s.poster)} alt="" loading="lazy" decoding="async" />
-          {:else}
-            <div class="ic"><Icon icon={icon(s)} size="1.35em" /></div>
-          {/if}
-          <div class="main">
-            <div class="line">
-              <span class="t">{s.title}</span>
-              <span class="u">{s.user}</span>
-            </div>
-            {#if s.subtitle && !tight}<div class="s">{s.subtitle}</div>{/if}
-            {#if props.show_progress !== false}
-              <div class="bar"><div class="fill" style="width:{pct(s)}%"></div></div>
-              <div class="foot">
-                <span>
-                  {#if s.state === 'paused'}<Icon icon="mdi:pause" size="0.9em" /> Paused
-                  {:else}{left(s)}{#if s.duration}{' · ' + pct(s) + '%'}{/if}{/if}
-                </span>
-                {#if props.show_quality !== false}
-                  <span class="q {quality(s).tone}">{quality(s).label}{#if s.resolution && !tight}{' · ' + s.resolution}{/if}</span>
-                {/if}
-              </div>
+    {#if !live.length}
+      <div class="quiet"><Icon icon="mdi:pause-circle-outline" size="1.2em" /><span>Nothing playing right now.</span></div>
+    {:else}
+      <div class="rows" class:single={live.length === 1}>
+        {#each live as s, i (i + s.user + s.title)}
+          <div class="row" class:paused={s.state === 'paused'}>
+            {#if art(s.poster)}
+              <img class="art" src={art(s.poster)} alt="" loading="lazy" decoding="async" />
+            {:else}
+              <div class="ic"><Icon icon={icon(s)} size="1.35em" /></div>
             {/if}
+            <div class="main">
+              <div class="line">
+                <span class="t">{s.title}</span>
+                <span class="u" style="--uh:{hueFor(s.user)};background:{hueWash(s.user, 0.16)}">{s.user}</span>
+              </div>
+              {#if s.subtitle && !tight}<div class="s">{s.subtitle}</div>{/if}
+              {#if props.show_progress !== false}
+                <div class="bar"><div class="fill" style="width:{pct(s)}%"></div></div>
+                <div class="foot">
+                  <span class="num">
+                    {#if s.state === 'paused'}<Icon icon="mdi:pause" size="0.9em" /> Paused
+                    {:else}{left(s)}{#if s.duration}{' · ' + pct(s) + '%'}{/if}{/if}
+                  </span>
+                  {#if props.show_quality !== false}
+                    <span class="q {quality(s).tone}">{quality(s).label}{#if s.resolution && !tight}{' · ' + s.resolution}{/if}</span>
+                  {/if}
+                </div>
+              {/if}
+            </div>
           </div>
+        {/each}
+      </div>
+    {/if}
+
+    {#if cont.length}
+      <!-- Item 33: partially watched, most recent first. Nothing here is made up:
+           every tile is a stream the sensor itself reported as paused. -->
+      <div class="cont">
+        <div class="microcaps lab">Continue</div>
+        <div class="strip">
+          {#each cont as s, i (i + s.title + s.user)}
+            <div class="ctile" title={[s.title, s.user, shortLeft(s) ? shortLeft(s) + ' left' : ''].filter(Boolean).join(' · ')}>
+              <div class="cart">
+                {#if art(s.poster)}
+                  <img src={art(s.poster)} alt="" loading="lazy" decoding="async" />
+                {:else}
+                  <div class="cic"><Icon icon={icon(s)} size="1.4em" /></div>
+                {/if}
+                <div class="cscrim" aria-hidden="true"></div>
+                <div class="cmeta">
+                  <span class="ct">{s.title}</span>
+                  <span class="num cleft">{shortLeft(s)}</span>
+                </div>
+                <div class="cbar" aria-hidden="true"><div class="cfill" style="width:{pct(s)}%"></div></div>
+              </div>
+            </div>
+          {/each}
         </div>
-      {/each}
-    </div>
+      </div>
+    {/if}
   {/if}
 </div>
 
 <style>
-  .act { height: 100%; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
-  .head { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 1.05em; }
-  .count { background: rgba(255,255,255,.1); color: var(--muted); border-radius: 8px; padding: 0 7px; font-size: .8em; font-weight: 600; }
-  .rows { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: 10px; overflow: auto; }
+  /* Item 60: size container, so every measurement here answers to the card. */
+  .act { height: 100%; display: flex; flex-direction: column; gap: min(8px, 2.4cqh); min-height: 0; container-type: size; }
+  .head { flex: none; display: flex; align-items: center; gap: 8px; }
+  .count { background: rgba(255,255,255,.1); color: var(--muted); border-radius: 8px; padding: 0 7px; font-size: .76em; font-weight: 650; }
+  .rows { flex: 1 1 auto; min-height: 0; display: flex; flex-direction: column; gap: min(10px, 2.8cqh); overflow: auto; }
   .rows.single { justify-content: center; }
   .single .ic { width: 3.1em; height: 3.1em; }
   .single .t { font-size: 1.15em; }
-  .row { display: flex; gap: 12px; align-items: center; min-width: 0; }
-  .row + .row { border-top: 1px solid rgba(255,255,255,.08); padding-top: 10px; }
+  .row { display: flex; gap: min(12px, 3cqw); align-items: center; min-width: 0; }
+  .row + .row { border-top: 1px solid rgba(255,255,255,.08); padding-top: min(10px, 2.6cqh); }
   .ic { flex: none; width: 2.4em; height: 2.4em; border-radius: 50%; display: grid; place-items: center; background: rgba(255,255,255,.08); color: var(--accent); }
-  .art { flex: none; width: 2.4em; height: 3.5em; object-fit: cover; border-radius: 6px; background: rgba(255,255,255,.06); }
+  .art { flex: none; width: min(2.4em, 8cqw); height: min(3.5em, 11cqh); object-fit: cover; border-radius: 6px; background: rgba(255,255,255,.06); transition: transform var(--dur) var(--ease); }
   .single .art { width: 3.4em; height: 5em; }
+  .row:focus-visible .art { transform: scale(1.06); }
+  @media (hover: hover) {
+    .row:hover .art { transform: scale(1.06); }
+  }
   .paused .ic { color: var(--muted); }
   .main { flex: 1; min-width: 0; }
   .line { display: flex; align-items: baseline; gap: 8px; }
   .t { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .u { margin-left: auto; color: var(--muted); font-size: .82em; white-space: nowrap; }
+  /* The person keeps the colour they have everywhere else on the board. */
+  .u { margin-left: auto; color: var(--uh, var(--muted)); font-size: .78em; font-weight: 600; white-space: nowrap; padding: 1px 7px; border-radius: 999px; }
   .s { color: var(--muted); font-size: .86em; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .bar { height: 4px; border-radius: 2px; background: rgba(255,255,255,.12); margin-top: 7px; overflow: hidden; }
   .fill { height: 100%; background: var(--accent); border-radius: 2px; transition: width .4s; }
@@ -184,5 +258,33 @@
   .q.ok { color: #7ec8ff; }
   .q.good { color: #6fdc9b; }
   .q.warn { color: #ffc861; }
-  .none { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--muted); font-size: .9em; text-align: center; }
+  .none, .quiet { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--muted); font-size: .9em; text-align: center; }
+  .quiet { flex: 0 0 auto; flex-direction: row; gap: 7px; font-size: .84em; padding: min(6px, 1.6cqh) 0; }
+
+  /* ---- continue watching (item 33) ---- */
+  .cont { flex: none; display: flex; flex-direction: column; gap: min(5px, 1.4cqh); height: min(104px, 40cqh); min-height: 0; }
+  .hascont .cont { padding-top: min(6px, 1.6cqh); border-top: 1px solid rgba(255,255,255,.08); }
+  .lab { flex: none; font-size: .62em; }
+  .strip { flex: 1; min-height: 0; display: flex; gap: min(7px, 1.6cqw); overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+  .strip::-webkit-scrollbar { height: 0; }
+  .ctile { flex: none; height: 100%; width: min(72px, 16cqw); max-width: 110px; }
+  .cart { position: relative; height: 100%; border-radius: min(9px, 2.4cqh); overflow: hidden; background: rgba(255,255,255,.06); }
+  .cart img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform var(--dur) var(--ease); }
+  .ctile:focus-visible .cart img { transform: scale(1.06); }
+  @media (hover: hover) {
+    .ctile:hover .cart img { transform: scale(1.06); }
+  }
+  .cic { width: 100%; height: 100%; display: grid; place-items: center; color: var(--muted); }
+  .cscrim { position: absolute; inset: auto 0 0 0; height: 58%; background: linear-gradient(180deg, transparent, rgba(6,8,14,.86)); }
+  .cmeta { position: absolute; inset: auto 0 0 0; display: flex; align-items: baseline; gap: 5px; padding: 0 min(5px, 1.2cqw) min(7px, 1.8cqh); }
+  .ct { flex: 1; min-width: 0; font-size: min(.68em, 2.6cqw); font-weight: 600; color: #fff; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .cleft { flex: none; font-size: min(.62em, 2.3cqw); color: rgba(255,255,255,.78); }
+  .cbar { position: absolute; inset: auto 0 0 0; height: 3px; background: rgba(255,255,255,.22); }
+  .cfill { height: 100%; background: var(--accent); transition: width .4s; }
+
+  /* Item 52: every number that can change holds its own column. */
+  .num, .cleft, .count, .foot span { font-variant-numeric: tabular-nums; font-feature-settings: 'tnum' 1; }
+
+  .tight .cont { height: min(78px, 34cqh); }
+  .tight .lab { display: none; }
 </style>

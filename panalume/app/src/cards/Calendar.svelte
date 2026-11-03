@@ -23,13 +23,16 @@
 
 <script>
   // Today's and upcoming events from Home Assistant's calendars (Google, CalDAV,
-  // Local calendar, holidays…), grouped by day. Each calendar has its own colour;
-  // events on now are highlighted, and tapping one shows its details. Or a week
-  // or month at a glance, with arrows to move through them; tapping a day opens
-  // its events.
+  // Local calendar, holidays…). The list view opens with a seven-day strip: tap a
+  // day to narrow the list to it, tap again to clear. All-day events sit in a
+  // single chip row above the timed list rather than as rows with a blank time,
+  // events belonging to a family member take that person's hue, and the whole
+  // list is sliced to what actually fits the card. Or a week or month at a
+  // glance, with arrows to move through them; tapping a day opens its events.
   import Icon from '../components/Icon.svelte';
   import { t } from '../lib/tpl.js';
   import { clock } from '../lib/clock.svelte.js';
+  import { hueFor, hueWash } from '../lib/design.svelte.js';
   let { props, w = 360, h = 320 } = $props();
   const show = (k) => !props.hide?.[k];
   const COLORS = ['#4fb4ff', '#ff8fb1', '#5bd88f', '#ffc861', '#b48cff', '#ff9a3c', '#2ed3c4', '#ff6b6b'];
@@ -47,6 +50,7 @@
   const stamp = $derived(cals.map((id) => states.get(id)?.last_updated || '').join('|'));
   let events = $state([]);
   let error = $state('');
+  let loading = $state(true);
   let refresh = $state(0);
   $effect(() => {
     const i = setInterval(() => refresh++, 5 * 60e3);
@@ -55,13 +59,14 @@
   $effect(() => {
     refresh; stamp;
     const list = cals;
-    if (!list.length) return void (events = []);
+    if (!list.length) { events = []; loading = false; return void (error = ''); }
     const [from, to] = range.split('|').map((x) => new Date(Number(x)));
     const q = `?start=${encodeURIComponent(from.toISOString())}&end=${encodeURIComponent(to.toISOString())}`;
     let alive = true;
+    loading = true;
     Promise.all(list.map((id, i) => fetch(`ha/api/calendars/${id}${q}`).then((r) => (r.ok ? r.json() : Promise.reject(new Error(`${id}: ${r.status}`)))).then((evs) => evs.map((ev) => norm(ev, id, i)))))
-      .then((all) => { if (alive) { events = all.flat().filter(Boolean).sort((a, b) => a.start - b.start || b.allDay - a.allDay); error = ''; } })
-      .catch((e) => { if (alive) error = e.message || 'Could not load the calendars'; });
+      .then((all) => { if (alive) { events = all.flat().filter(Boolean).sort((a, b) => a.start - b.start || b.allDay - a.allDay); error = ''; loading = false; } })
+      .catch((e) => { if (alive) { error = e.message || 'Could not load the calendars'; loading = false; } });
     return () => (alive = false);
   });
 
@@ -76,28 +81,115 @@
     return { key: `${cal}|${ev.uid || ''}|${start.getTime()}|${ev.summary}`, cal, color: COLORS[i % COLORS.length], title: ev.summary || '(No title)', location: ev.location || '', description: ev.description || '', allDay, start, end };
   }
 
+  // A family member's hue when the event is theirs — named in the title, or the
+  // calendar is theirs. Everyone else keeps the card's accent, so a calendar of
+  // school runs and bins doesn't turn into a paint chart.
+  const PEOPLE = [
+    ['charlie', /(^|[^a-z])charlie([^a-z]|$)/],
+    ['phoenix', /(^|[^a-z])phoenix([^a-z]|$)/],
+    ['alicia', /(^|[^a-z])alicia([^a-z]|$)/],
+    ['ali', /(^|[^a-z])ali([^a-z]|$)/],
+    ['kyle', /(^|[^a-z])kyle([^a-z]|$)/],
+  ];
+  const calName = (id) => (states.get(id)?.attributes.friendly_name || id.slice(9)).replace(/\s*calendar$/i, '');
+  const personOf = (e) => {
+    const hay = `${e.title || ''} ${calName(e.cal)}`.toLowerCase();
+    const hit = PEOPLE.find(([, re]) => re.test(hay));
+    return hit ? hit[0] : '';
+  };
+  // The row / chip colour: a person's hue, else the card's accent (item 21).
+  const look = (e) => {
+    const who = personOf(e);
+    return who
+      ? { who, hue: hueFor(who), wash: hueWash(who, 0.18) }
+      : { who: '', hue: 'var(--accent)', wash: 'color-mix(in srgb, var(--accent) 15%, transparent)' };
+  };
+  const people = $derived([...new Set(events.map(personOf).filter(Boolean))]);
+
   // Grouped by day; an event spanning several days shows on each of them.
   const now = $derived(clock.now);
-  const groups = $derived.by(() => {
+  const today = $derived(day0(now).getTime());
+  const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
+  const crosses = (e, date) => {
+    const next = addDays(date, 1);
+    return e.start < next && (e.end > date || (+e.end === +e.start && e.start >= date));
+  };
+
+  const maxN = $derived(Math.max(1, Number(props.max) || 20));
+  const small = $derived(h < 170);
+
+  // ---- list view: the seven-day strip -------------------------------------
+  // Always today plus the six days after it, whether or not they hold events —
+  // tapping one narrows the list, tapping it again clears the filter.
+  let picked = $state(null);
+  const stripDays = $derived(Array.from({ length: 7 }, (_, i) => {
+    const d = addDays(new Date(today), i);
+    return { d, key: d.getTime(), n: events.filter((e) => crosses(e, d)).length };
+  }));
+  $effect(() => { if (picked != null && !stripDays.some((s) => s.key === picked)) picked = null; });
+
+  // Timed events per day, not already over.
+  const notOver = (e) => e.allDay || e.end > now || (+e.end === +e.start && e.start >= now - 60e3);
+  const dayGroups = $derived.by(() => {
     const out = [];
-    const today = day0(now);
-    let left = Math.max(1, Number(props.max) || 20);
-    for (let d = 0; d < days && left > 0; d++) {
-      const date = new Date(today); date.setDate(date.getDate() + d);
-      const next = new Date(date); next.setDate(next.getDate() + 1);
-      // On this day (end is exclusive; a zero-length event counts at its start)…
-      const onDay = (e) => e.start < next && (e.end > date || (+e.end === +e.start && e.start >= date));
-      // …and not already over (finished events drop off during the day).
-      const notOver = (e) => e.allDay || e.end > now || (+e.end === +e.start && e.start >= now - 60e3);
-      const evs = events.filter((e) => onDay(e) && notOver(e));
-      if (!evs.length) continue;
-      const take = evs.slice(0, left);
-      left -= take.length;
-      out.push({ date, evs: take });
+    for (let d = 0; d < days; d++) {
+      const date = addDays(new Date(today), d);
+      const evs = events.filter((e) => !e.allDay && crosses(e, date) && notOver(e));
+      if (evs.length) out.push({ date, evs });
     }
     return out;
   });
-  const empty = $derived(cals.length && !error && !groups.length);
+  const shownGroups = $derived(picked == null ? dayGroups : dayGroups.filter((g) => g.date.getTime() === picked));
+
+  // All-day events: one chip row above the timed list, never a row.
+  const allday = $derived.by(() => {
+    const t0 = new Date(today), end = addDays(t0, days);
+    return events
+      .filter((e) => e.allDay && e.start < end && e.end > t0)
+      .sort((a, b) => a.start - b.start || a.title.localeCompare(b.title));
+  });
+  const chips = $derived((picked == null ? allday : allday.filter((e) => crosses(e, new Date(picked)))).slice(0, maxN));
+
+  // ---- list view: slice to fit -------------------------------------------
+  // Rows are a fixed height (--rh, set from the card's height), so the number
+  // that fits is arithmetic rather than a scrollbar surprise.
+  const rowH = $derived(Math.max(26, Math.min(38, h * 0.055)));
+  const headH = $derived(show('head') && !small ? 30 : 0);
+  const stripH = $derived(small ? 0 : 48);
+  const fitted = $derived.by(() => {
+    const budget = Math.max(rowH * 2 + 34, h - headH - stripH - (chips.length ? 28 : 0) - 14);
+    // Fit once; if the list had to be cut, fit again leaving room for the "+N more" line.
+    const pass = (px0) => {
+      let left = Math.max(1, maxN - chips.length);
+      let px = px0, cut = false;
+      const out = [];
+      for (const g of shownGroups) {
+        if (left <= 0 || px < rowH + 14) { cut = true; break; }
+        px -= 20; // the micro-caps section header
+        const evs = [];
+        let full = true;
+        for (const e of g.evs) {
+          if (left <= 0 || px < rowH - 2) { full = false; break; }
+          evs.push(e); px -= rowH; left--;
+        }
+        if (evs.length) out.push({ date: g.date, evs });
+        if (!full) { cut = true; break; }
+      }
+      return { out, cut };
+    };
+    const first = pass(budget);
+    return first.cut ? pass(budget - 15).out : first.out;
+  });
+  const more = $derived(Math.max(0, shownGroups.reduce((n, g) => n + g.evs.length, 0) - fitted.reduce((n, g) => n + g.evs.length, 0)));
+
+  const diffTo = (d) => Math.round((day0(d) - day0(now)) / 864e5);
+  const sectionLabel = (d) => {
+    const k = diffTo(d);
+    if (k === 0) return 'Today';
+    if (k === 1) return 'Tomorrow';
+    return d.toLocaleDateString(lang, { weekday: 'short', day: 'numeric', month: d.getMonth() !== new Date(now).getMonth() ? 'short' : undefined });
+  };
+  const dayTag = (e) => (crosses(e, day0(now)) ? '' : e.start.toLocaleDateString(lang, { weekday: 'short' }));
 
   // Week and month: the first day of the week (from the setting, else the language).
   const firstDay = $derived.by(() => {
@@ -109,9 +201,7 @@
     } catch {}
     return 1;
   });
-  const addDays = (d, n) => { const x = new Date(d); x.setDate(x.getDate() + n); return x; };
   const weekOf = (d) => addDays(day0(d), -((day0(d).getDay() - firstDay + 7) % 7));
-  const today = $derived(day0(now).getTime());
   // The days on screen, as a "from|to" key so the calendars are only fetched again when it changes.
   const span = $derived.by(() => {
     const t0 = new Date(today);
@@ -198,10 +288,6 @@
   const pct = (x) => `${((x - hourSpan[0]) / (hourSpan[1] - hourSpan[0])) * 100}%`;
 
   const lang = undefined;
-  const dayName = (d) => {
-    const diff = Math.round((day0(d) - day0(now)) / 864e5);
-    return diff === 0 ? 'Today' : diff === 1 ? 'Tomorrow' : d.toLocaleDateString(lang, { weekday: diff < 7 ? 'long' : 'short', ...(diff < 7 ? {} : { day: 'numeric', month: 'short' }) });
-  };
   const h12 = $derived(!!props.hour12);
   const hm = (d) => d.toLocaleTimeString(lang, h12 ? { hour: 'numeric', minute: '2-digit', hour12: true } : { hour: '2-digit', minute: '2-digit', hour12: false });
   const when = (e, date) => {
@@ -214,14 +300,18 @@
     return 'All day';
   };
   const isNow = (e) => !e.allDay && e.start <= now && e.end > now;
-  const calName = (id) => (states.get(id)?.attributes.friendly_name || id.slice(9)).replace(/\s*calendar$/i, '');
   let open = $state(null);
-  const small = $derived(h < 170);
   const title = $derived(view !== 'list' ? [t(props.title), period].filter(Boolean).join(' · ') : t(props.title) || new Date(now).toLocaleDateString(lang, { weekday: 'long', day: 'numeric', month: 'long' }));
   const past = (e) => !e.allDay && e.end < now;
+  const dstr = (d) => d.toLocaleDateString(lang, { weekday: 'short', day: 'numeric', month: 'short' });
+  const adWhen = (e) => {
+    const last = e.end > e.start ? addDays(e.end, -1) : e.start;
+    return e.start.toDateString() === last.toDateString() ? dstr(e.start) : `${dstr(e.start)} – ${dstr(last)}`;
+  };
+  const adOpen = $derived(events.find((e) => e.allDay && e.key === open) || null);
 </script>
 
-<div class="cal" class:small class:h12>
+<div class="cal" class:small class:h12 style="--rh:{rowH}px">
   {#if show('head') && !small}
     <div class="head">
       <Icon icon="mdi:calendar-month-outline" size="1.2em" />
@@ -233,60 +323,142 @@
           <button onclick={() => { offset++; sheet = null; }} aria-label="Next"><Icon icon="mdi:chevron-right" size="1.2em" /></button>
         </span>
       {/if}
-      {#if show('legend') && cals.length > 1 && w >= (view === 'list' ? 300 : 460)}
-        <span class="legend">{#each cals as id, i}<i style="background:{COLORS[i % COLORS.length]}" title={calName(id)}></i>{/each}</span>
+      {#if show('legend') && w >= 300}
+        {#if view === 'list'}
+          {#if people.length > 1 || (people.length && cals.length > 1)}
+            <span class="legend people">{#each people as p}<i style="background:{hueFor(p)}" title={p[0].toUpperCase() + p.slice(1)}></i>{/each}</span>
+          {/if}
+        {:else if cals.length > 1}
+          <span class="legend">{#each cals as id, i}<i style="background:{COLORS[i % COLORS.length]}" title={calName(id)}></i>{/each}</span>
+        {/if}
       {/if}
     </div>
   {/if}
 
   {#if !cals.length}
-    <div class="msg">Pick one or more calendars in the card's settings.</div>
+    <div class="blank">
+      <Icon icon="mdi:calendar-blank-outline" size="1.5em" />
+      <span class="microcaps">No calendars</span>
+      <span class="bl">Pick one or more in the card’s settings</span>
+    </div>
   {:else if error}
-    <div class="msg">{error}</div>
-  {:else if view === 'week' && !sheet}
+    <div class="blank">
+      <Icon icon="mdi:calendar-alert" size="1.5em" />
+      <span class="microcaps">Calendars offline</span>
+      <span class="bl">{error}</span>
+    </div>
+  {:else if view === 'list'}
+    <div class="lbody">
+      {#if !small}
+        <div class="strip" data-stop>
+          {#each stripDays as s (s.key)}
+            <button
+              class="pill"
+              class:today={s.key === today}
+              class:on={picked === s.key}
+              class:quiet={!s.n}
+              onclick={() => (picked = picked === s.key ? null : s.key)}
+              aria-pressed={picked === s.key}
+              aria-label={`${s.d.toLocaleDateString(lang, { weekday: 'long', day: 'numeric', month: 'long' })}, ${s.n ? `${s.n} ${s.n === 1 ? 'event' : 'events'}` : 'nothing on'}`}
+            >
+              <span class="pl">{s.d.toLocaleDateString(lang, { weekday: 'narrow' })}</span>
+              <b class="pn num">{s.d.getDate()}</b>
+              <i class="pd" class:has={!!s.n}></i>
+            </button>
+          {/each}
+        </div>
+      {/if}
+
+      {#if loading && !events.length}
+        <div class="blank">
+          <Icon icon="mdi:calendar-sync-outline" size="1.5em" />
+          <span class="microcaps">Reading calendars</span>
+        </div>
+      {:else}
+        {#if chips.length}
+          {@render adRow(chips)}
+        {/if}
+        {#if adOpen && chips.some((c) => c.key === adOpen.key)}
+          {@render adInfo(adOpen)}
+        {/if}
+
+        {#if fitted.length}
+          <div class="list" data-stop>
+            {#each fitted as g (g.date.getTime())}
+              <div class="day microcaps" class:today={g.date.getTime() === today}>
+                <span>{sectionLabel(g.date)}</span><i class="rule"></i>
+              </div>
+              {#each g.evs as e (e.key)}{@render row(e, g.date)}{/each}
+            {/each}
+            {#if more > 0}<div class="more microcaps">+{more} more</div>{/if}
+          </div>
+        {:else}
+          <div class="blank">
+            <Icon icon="mdi:calendar-check-outline" size="1.5em" />
+            <span class="microcaps">{picked ? 'Nothing timed' : 'Nothing on'}</span>
+            <span class="bl">{picked ? dstr(new Date(picked)) : `The next ${days === 1 ? 'day' : `${days} days`} ${days === 1 ? 'is' : 'are'} clear`}</span>
+          </div>
+        {/if}
+      {/if}
+    </div>
+  {:else if sheet}
+    {@const d = new Date(sheet)}
+    {@const evs = onDate(d)}
+    <div class="sheet">
+      <button class="back" onclick={() => { sheet = null; open = null; }}><Icon icon="mdi:arrow-left" size="1.1em" />{d.toLocaleDateString(lang, { weekday: 'long', day: 'numeric', month: 'long' })}</button>
+      {#if evs.length}
+        {#if evs.some((e) => e.allDay)}{@render adRow(evs.filter((e) => e.allDay), false)}{/if}
+        {#if adOpen && evs.includes(adOpen)}{@render adInfo(adOpen)}{/if}
+        <div class="list" data-stop>{#each evs.filter((e) => !e.allDay) as e (e.key)}{@render row(e, d)}{/each}</div>
+      {:else}<div class="blank"><Icon icon="mdi:calendar-check-outline" size="1.5em" /><span class="microcaps">Nothing on</span></div>{/if}
+    </div>
+  {:else if view === 'week'}
     <div class="week" class:rows data-stop>
       {#each gridDays as d (d.getTime())}
         {@const evs = byDay.get(d.getTime()) || []}
         <div class="wday" class:today={d.getTime() === today} class:gone={d.getTime() < today}>
-          <button class="dh" onclick={() => openDay(d)}><span>{d.toLocaleDateString(lang, { weekday: rows ? 'short' : w >= 560 ? 'short' : 'narrow' })}</span><b>{d.getDate()}</b></button>
+          <button class="dh" onclick={() => openDay(d)}><span>{d.toLocaleDateString(lang, { weekday: rows ? 'short' : w >= 560 ? 'short' : 'narrow' })}</span><b class="num">{d.getDate()}</b></button>
           <div class="chips">
             {#each evs as e (e.key)}
-              <button class="chip" class:all={e.allDay} class:past={past(e)} style="--c:{e.color}" onclick={() => openDay(d, e.key)} title={e.title}>
-                {#if !e.allDay && e.start >= d && (rows || w >= 640)}<span class="tm">{hm(e.start)}</span>{/if}<span class="ct">{e.title}</span>
+              {@const lk = look(e)}
+              <button class="chip" class:all={e.allDay} class:past={past(e)} style="--c:{lk.hue}" onclick={() => openDay(d, e.key)} title={e.title}>
+                {#if !e.allDay && e.start >= d && (rows || w >= 640)}<span class="tm num">{hm(e.start)}</span>{/if}<span class="ct">{e.title}</span>
               </button>
             {/each}
           </div>
         </div>
       {/each}
     </div>
-  {:else if view === 'timeline' && !sheet}
+  {:else if view === 'timeline'}
     {@const [h0, h1] = hourSpan}
     <div class="tl" class:narrow={w < 420} data-stop style="--hours:{h1 - h0}">
       <div class="tl-row">
         <span></span>
         {#each gridDays as d (d.getTime())}
-          <button class="tl-dh" class:today={d.getTime() === today} class:gone={d.getTime() < today} onclick={() => openDay(d)}><span>{d.toLocaleDateString(lang, { weekday: w >= 420 ? 'short' : 'narrow' })}</span><b>{d.getDate()}</b></button>
+          <button class="tl-dh" class:today={d.getTime() === today} class:gone={d.getTime() < today} onclick={() => openDay(d)}><span>{d.toLocaleDateString(lang, { weekday: w >= 420 ? 'short' : 'narrow' })}</span><b class="num">{d.getDate()}</b></button>
         {/each}
       </div>
       {#if allDayBars.length}
         <div class="tl-row tl-all">
           {#each allDayBars as { e, a, b, lane } (e.key)}
-            <button class="tl-allev" style="--c:{e.color};grid-column:{a + 2} / {b + 2};grid-row:{lane + 1}" onclick={() => openDay(addDays(span.from, a), e.key)} title={e.title}>{e.title}</button>
+            {@const lk = look(e)}
+            <button class="tl-allev" style="--c:{lk.hue};grid-column:{a + 2} / {b + 2};grid-row:{lane + 1}" onclick={() => openDay(addDays(span.from, a), e.key)} title={e.title}>{e.title}</button>
           {/each}
         </div>
       {/if}
       <div class="tl-body">
         <div class="tl-grid">
           <div class="tl-hours">
-            {#each Array.from({ length: h1 - h0 - 1 }, (_, i) => h0 + i + 1) as hr}<span style="top:{pct(hr)}">{hourLabel(hr)}</span>{/each}
+            {#each Array.from({ length: h1 - h0 - 1 }, (_, i) => h0 + i + 1) as hr}<span class="num" style="top:{pct(hr)}">{hourLabel(hr)}</span>{/each}
           </div>
           {#each gridDays as d (d.getTime())}
             <div class="tl-col" class:today={d.getTime() === today}>
               {#each timedByDay.get(d.getTime()) || [] as p (p.ev.key)}
                 {@const e = p.ev}
-                <button class="tl-ev" class:past={past(e)} class:now={isNow(e)} style="--c:{e.color};top:{pct(p.s)};height:{((Math.max(p.end, p.s + 0.25) - p.s) / (h1 - h0)) * 100}%;left:calc({(p.col / p.n) * 100}% + 1px);width:calc({100 / p.n}% - 3px)" onclick={() => openDay(d, e.key)} title={e.title}>
+                {@const lk = look(e)}
+                <button class="tl-ev" class:past={past(e)} class:now={isNow(e)} style="--c:{lk.hue};top:{pct(p.s)};height:{((Math.max(p.end, p.s + 0.25) - p.s) / (h1 - h0)) * 100}%;left:calc({(p.col / p.n) * 100}% + 1px);width:calc({100 / p.n}% - 3px)" onclick={() => openDay(d, e.key)} title={e.title}>
                   <span class="tl-ti">{e.title}</span>
-                  <span class="tl-tm">{hm(e.start)} – {hm(e.end)}</span>
+                  <span class="tl-tm num">{hm(e.start)} – {hm(e.end)}</span>
                   {#if e.location && show('location')}<span class="tl-loc">{e.location}</span>{/if}
                 </button>
               {/each}
@@ -296,85 +468,157 @@
         </div>
       </div>
     </div>
-  {:else if view === 'month' && !sheet}
+  {:else}
     <div class="month" data-stop style="--weeks:{span.weeks}">
       {#each weekdays as wd}<span class="wd">{wd}</span>{/each}
       {#each gridDays as d (d.getTime())}
         {@const evs = byDay.get(d.getTime()) || []}
         <button class="cell" class:other={d.getMonth() !== span.first.getMonth()} class:today={d.getTime() === today} onclick={() => openDay(d)} aria-label={d.toLocaleDateString(lang, { weekday: 'long', day: 'numeric', month: 'long' }) + (evs.length ? `, ${evs.length} events` : '')}>
-          <span class="dn">{d.getDate()}</span>
+          <span class="dn num">{d.getDate()}</span>
           {#if lines}
-            {#each evs.slice(0, evs.length > lines ? lines - 1 : lines) as e (e.key)}<span class="mchip" class:all={e.allDay} style="--c:{e.color}">{e.title}</span>{/each}
+            {#each evs.slice(0, evs.length > lines ? lines - 1 : lines) as e (e.key)}{@const lk = look(e)}<span class="mchip" class:all={e.allDay} style="--c:{lk.hue}">{e.title}</span>{/each}
             {#if evs.length > lines}<span class="more">+{evs.length - lines + 1}</span>{/if}
           {:else if evs.length}
-            <span class="dots">{#each evs.slice(0, 4) as e (e.key)}<i style="background:{e.color}"></i>{/each}</span>
+            <span class="dots">{#each evs.slice(0, 4) as e (e.key)}{@const lk = look(e)}<i style="background:{lk.hue}"></i>{/each}</span>
           {/if}
         </button>
-      {/each}
-    </div>
-  {:else if sheet}
-    {@const d = new Date(sheet)}
-    {@const evs = onDate(d)}
-    <div class="sheet">
-      <button class="back" onclick={() => { sheet = null; open = null; }}><Icon icon="mdi:arrow-left" size="1.1em" />{d.toLocaleDateString(lang, { weekday: 'long', day: 'numeric', month: 'long' })}</button>
-      {#if evs.length}
-        <div class="list" data-stop>{#each evs as e (e.key)}{@render row(e, d)}{/each}</div>
-      {:else}<div class="msg">Nothing on</div>{/if}
-    </div>
-  {:else if empty}
-    <div class="msg">Nothing on in the next {days === 1 ? 'day' : `${days} days`}</div>
-  {:else}
-    <div class="list" data-stop>
-      {#each groups as g (g.date.getTime())}
-        <div class="day" class:today={dayName(g.date) === 'Today'}>{dayName(g.date)}</div>
-        {#each g.evs as e (e.key)}{@render row(e, g.date)}{/each}
       {/each}
     </div>
   {/if}
 </div>
 
 {#snippet row(e, date)}
-  <button class="ev" class:now={isNow(e)} class:open={open === e.key} style="--c:{e.color}" onclick={() => (open = open === e.key ? null : e.key)}>
+  {@const lk = look(e)}
+  <button class="ev" class:now={isNow(e)} class:open={open === e.key} style="--c:{lk.hue}" onclick={() => (open = open === e.key ? null : e.key)}>
     <span class="bar"></span>
-    <span class="when">{when(e, date)}</span>
+    <span class="when num">{when(e, date)}</span>
     <span class="what">
       <span class="ti">{e.title}</span>
       {#if open === e.key}
         {#if e.location}<span class="sub"><Icon icon="mdi:map-marker-outline" size="1em" />{e.location}</span>{/if}
         {#if e.description}<span class="desc">{e.description}</span>{/if}
         {#if show('legend') && cals.length > 1}<span class="sub"><Icon icon="mdi:calendar" size="1em" />{calName(e.cal)}</span>{/if}
-      {:else if e.location && show('location') && !small}<span class="sub">{e.location}</span>{/if}
+      {:else if e.location && show('location') && !small && w >= 360}
+        <span class="loc">{e.location}</span>
+      {/if}
     </span>
   </button>
 {/snippet}
 
+{#snippet adRow(list, label = true)}
+  <div class="adrow" data-stop>
+    {#if label && !small}<span class="microcaps adlbl">All day</span>{/if}
+    <div class="adchips">
+      {#each list as e (e.key)}
+        {@const lk = look(e)}
+        <button class="adchip" class:open={open === e.key} style="--c:{lk.hue};--w:{lk.wash}" onclick={() => (open = open === e.key ? null : e.key)} title={e.title}>
+          {#if dayTag(e)}<i class="adday">{dayTag(e)}</i>{/if}<span class="adt">{e.title}</span>
+        </button>
+      {/each}
+    </div>
+  </div>
+{/snippet}
+
+{#snippet adInfo(e)}
+  {@const lk = look(e)}
+  <div class="adinfo" style="--c:{lk.hue}">
+    <span class="ai-t">{e.title}</span>
+    <span class="microcaps ai-w">{adWhen(e)}</span>
+    {#if e.location && show('location')}<span class="ai-l"><Icon icon="mdi:map-marker-outline" size="1em" />{e.location}</span>{/if}
+    {#if e.description}<span class="ai-d">{e.description}</span>{/if}
+    {#if show('legend') && cals.length > 1}<span class="ai-l"><Icon icon="mdi:calendar" size="1em" />{calName(e.cal)}</span>{/if}
+  </div>
+{/snippet}
+
 <style>
-  .cal { height: 100%; display: flex; flex-direction: column; gap: 8px; min-height: 0; }
-  .head { display: flex; align-items: center; gap: 8px; font-weight: 600; }
+  .cal { height: 100%; display: flex; flex-direction: column; gap: 8px; min-height: 0; container-type: size; container-name: cal; }
+  .head { display: flex; align-items: center; gap: 8px; font-weight: 600; flex: none; }
   .head :global(svg) { color: var(--accent); flex: none; }
   .t { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .legend { display: flex; gap: 4px; flex: none; }
   .legend i { width: 8px; height: 8px; border-radius: 50%; }
-  .msg { flex: 1; display: grid; place-items: center; color: var(--muted); font-size: .85em; text-align: center; padding: 8px; }
-  .list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 3px; margin-right: -6px; padding-right: 6px; scrollbar-width: thin; }
-  .day { font-size: .72em; font-weight: 600; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); margin-top: 6px; }
+  .legend.people i { width: 7px; height: 7px; }
+
+  /* Quiet placeholders (item 61): never an empty card, never a bare zero. */
+  .blank { flex: 1; min-height: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px; text-align: center; padding: 8px; color: var(--muted); }
+  .blank :global(svg) { opacity: .5; }
+  .bl { font-size: .78em; opacity: .75; max-width: 90%; }
+
+  .lbody { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: min(8px, 1.2cqh); }
+
+  /* ---- the seven-day strip (item 36) ---- */
+  .strip { flex: none; display: flex; gap: min(6px, 1cqw); }
+  .pill {
+    flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: min(2px, .3cqh); height: min(48px, max(34px, 7.4cqh)); padding: 0 2px;
+    border: 0; border-radius: min(11px, 2.2cqw); background: rgba(255,255,255,.045);
+    color: var(--muted); font: inherit; transition: background-color 160ms var(--ease), color 160ms var(--ease), box-shadow 160ms var(--ease);
+  }
+  .pill .pl { font-size: .58em; font-weight: 650; letter-spacing: .1em; text-transform: uppercase; line-height: 1; }
+  .pill .pn { font-size: min(1.12em, 3.1cqh); font-weight: 600; line-height: 1.15; color: var(--text); }
+  .pill .pd { width: 4px; height: 4px; border-radius: 50%; background: transparent; }
+  .pill .pd.has { background: var(--accent); opacity: .85; }
+  .pill.quiet .pn { color: var(--muted); opacity: .7; }
+  .pill.today { background: var(--accent); color: #0b1220; }
+  .pill.today .pn { color: #0b1220; }
+  .pill.today .pd.has { background: #0b1220; opacity: .75; }
+  .pill.on { background: color-mix(in srgb, var(--accent) 18%, rgba(255,255,255,.045)); color: var(--accent); box-shadow: inset 0 0 0 1.5px var(--accent); }
+  .pill.on .pn { color: var(--accent); }
+  .pill.today.on { background: var(--accent); color: #0b1220; box-shadow: inset 0 0 0 2px rgba(255,255,255,.55); }
+  .pill.today.on .pn { color: #0b1220; }
+
+  /* ---- all-day chips (item 36) ---- */
+  .adrow { flex: none; display: flex; align-items: center; gap: 7px; min-width: 0; }
+  .adlbl { flex: none; }
+  .adchips { display: flex; align-items: center; gap: 4px; flex: 1; min-width: 0; overflow: hidden; }
+  .adchip {
+    display: flex; align-items: center; gap: 5px; flex: 0 1 auto; min-width: 0; max-width: 100%;
+    height: min(24px, max(18px, 3.5cqh)); padding: 0 9px; border: 0; border-radius: 999px;
+    background: var(--w); color: inherit; font: inherit; font-size: .74em; white-space: nowrap; overflow: hidden;
+  }
+  .adchip.open { box-shadow: inset 0 0 0 1.5px var(--c); }
+  .adchip .adt { overflow: hidden; text-overflow: ellipsis; }
+  .adchip .adday { flex: none; font-style: normal; font-size: .88em; font-weight: 650; letter-spacing: .06em; text-transform: uppercase; color: var(--c); }
+  .adinfo { flex: none; display: flex; flex-direction: column; gap: 2px; padding: 6px 10px; border-radius: 9px; background: rgba(255,255,255,.045); border-left: 3px solid var(--c); max-height: 8em; overflow: auto; }
+  .ai-t { font-size: .88em; font-weight: 600; }
+  .ai-w { font-size: .62em; }
+  .ai-l { display: flex; align-items: center; gap: 4px; font-size: .75em; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ai-d { font-size: .75em; color: var(--muted); white-space: pre-line; }
+
+  /* ---- the timed list ---- */
+  .list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: min(3px, .5cqh); margin-right: -6px; padding-right: 6px; scrollbar-width: thin; }
+  /* Micro-caps section headers (item 46), with a hairline rule after the label. */
+  .day { display: flex; align-items: center; gap: 8px; margin-top: 5px; flex: none; }
   .day:first-child { margin-top: 0; }
+  .day .rule { flex: 1; height: 1px; background: rgba(255,255,255,.09); }
   .day.today { color: var(--accent); }
-  .ev { display: flex; align-items: flex-start; gap: 9px; width: 100%; text-align: left; background: rgba(255,255,255,.04); border: 0; border-radius: 10px; padding: 7px 10px 7px 0; color: inherit; font: inherit; cursor: pointer; }
+  .day.today .rule { background: color-mix(in srgb, var(--accent) 34%, transparent); }
+  .more { margin-top: 3px; opacity: .6; }
+
+  .ev {
+    display: flex; align-items: center; gap: min(9px, 1.4cqw); width: 100%; height: var(--rh); flex: none;
+    text-align: left; background: rgba(255,255,255,.04); border: 0; border-radius: 10px;
+    padding: 0 10px 0 0; color: inherit; font: inherit; overflow: hidden; cursor: pointer;
+  }
   .ev.now { background: color-mix(in srgb, var(--c) 16%, transparent); }
-  .bar { width: 3px; align-self: stretch; border-radius: 2px; background: var(--c); flex: none; margin-left: 6px; }
-  .when { flex: none; width: 6.9em; white-space: nowrap; font-size: .8em; color: var(--muted); font-variant-numeric: tabular-nums; padding-top: .1em; }
+  .ev.open { height: auto; align-items: flex-start; padding-top: 8px; padding-bottom: 9px; }
+  .bar { width: 3px; align-self: stretch; border-radius: 2px; background: var(--c); flex: none; margin-left: 6px; border-radius: 0 2px 2px 0; }
+  .ev.open .bar { align-self: stretch; }
+  /* Tabular numerals down the time column (item 52). */
+  .when { flex: none; width: 6.9em; white-space: nowrap; font-size: .8em; color: var(--muted); font-variant-numeric: tabular-nums; font-feature-settings: 'tnum' 1; }
   .ev.now .when { color: var(--c); font-weight: 600; }
-  .what { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
-  .ti { font-size: .9em; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .ev.open .ti { white-space: normal; }
+  .what { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 7px; overflow: hidden; }
+  .ev.open .what { flex-direction: column; align-items: stretch; gap: 3px; }
+  .ti { flex: 0 1 auto; min-width: 0; font-size: .9em; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ev.open .ti { white-space: normal; font-weight: 600; }
+  .loc { flex: 0 1 auto; min-width: 0; max-width: 46%; font-size: .74em; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .sub { display: flex; align-items: center; gap: 4px; font-size: .75em; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .desc { font-size: .78em; color: var(--muted); white-space: pre-line; max-height: 8em; overflow: auto; }
-  .small .day:not(.today) { margin-top: 2px; }
-  .small .ev { padding-top: 5px; padding-bottom: 5px; }
+  .small .ev { padding-top: 0; padding-bottom: 0; border-radius: 7px; }
   .small .when { width: 3.6em; }
   .h12 .when { width: 9.4em; }
   .small.h12 .when { width: 4.9em; }
+
   .nav { display: flex; align-items: center; gap: 2px; flex: none; }
   .nav button { display: grid; place-items: center; min-width: 28px; height: 28px; padding: 0 4px; border: 0; border-radius: 8px; background: rgba(255,255,255,.06); color: inherit; font: inherit; }
   .nav .today-btn { font-size: .75em; font-weight: 600; padding: 0 9px; margin-right: 2px; }
@@ -445,4 +689,13 @@
   .back { display: flex; align-items: center; gap: 6px; align-self: flex-start; padding: 4px 10px 4px 6px; border: 0; border-radius: 8px; background: rgba(255,255,255,.06); color: inherit; font: inherit; font-size: .85em; font-weight: 600; }
   /* Fade out at the bottom when there's more to scroll to. */
   .list, .week { mask-image: linear-gradient(to bottom, #000 calc(100% - 18px), transparent); }
+
+  /* A narrow card drops the decorative bits before it drops information. */
+  @container cal (max-width: 330px) {
+    .adlbl { display: none; }
+    .strip { gap: 3px; }
+  }
+  @container cal (max-height: 240px) {
+    .day { margin-top: 2px; }
+  }
 </style>

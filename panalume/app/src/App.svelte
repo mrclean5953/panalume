@@ -2,8 +2,10 @@
   import Stage from './components/Stage.svelte';
   import Editor from './components/Editor.svelte';
   import Popup from './components/Popup.svelte';
+  import Ambient from './components/Ambient.svelte';
   import Icon from './components/Icon.svelte';
   import ViewIcon from './components/ViewIcon.svelte';
+  import { groupViews } from './lib/nav.js';
   import { app, load, save, layout, setPanelSide, DEVICES, MODE_SHORT, detectDevice, setView, removeSelected, duplicateSelected, selectedPlacement, changed, undo, undoLast, selectionSet, ensureEditable, zoneList, groupSelected } from './lib/config.svelte.js';
   import { conn, toasts, watchEntities, states, subscribe } from './lib/ha.svelte.js';
   import { loadMoney } from './lib/money.svelte.js';
@@ -153,9 +155,37 @@
 </svelte:head>
 
 {#if app.config}
+  <Ambient />
   <div class="app" class:noblur={!Number(th.cardBlur)} class:editing={app.editing} class:sheet={panelOpen && side === 'bottom'}>
     <Stage {available} {autoDevice} offset={panelOpen && side === 'left' ? panelW : 0} />
   </div>
+
+  <!-- Item 15: the dock's second tier. Six views stay on the bar; the rest open
+       here, grouped and on their own tiles, so a wall screen never has to
+       squeeze nine names into one row. -->
+  {#if app.dockSheet}
+    <div class="sheet-back" role="presentation" onclick={(e) => e.target === e.currentTarget && (app.dockSheet = false)}>
+      <div class="sheet" role="dialog" aria-modal="true" aria-label="All views">
+        <div class="sheet-head">
+          <span class="microcaps">All views</span>
+          <button class="x" onclick={() => (app.dockSheet = false)} aria-label="Close"><Icon icon="mdi:close" size="1.1em" /></button>
+        </div>
+        {#each groupViews(app.config.views) as sec (sec.group)}
+          <div class="sgroup">
+            <div class="microcaps">{sec.group}</div>
+            <div class="sgrid">
+              {#each sec.views as v (v.id)}
+                <button class="press" class:on={app.view === v.id} onclick={() => { setView(v.id); app.dockSheet = false; }}>
+                  <span class="smark"><ViewIcon view={v} size="1.25em" /></span>
+                  <span class="sname">{v.name}</span>
+                </button>
+              {/each}
+            </div>
+          </div>
+        {/each}
+      </div>
+    </div>
+  {/if}
 
   {#if app.editing}
     {#if app.panel}<Editor {side} width={panelW} />{/if}
@@ -228,4 +258,31 @@
     .bar select { max-width: 6.5em; padding: 0 6px; }
     .bar .lbl, .st { display: none; } /* folded phones: Done becomes just the tick; no Saved label */
   }
+
+  /* ---- dock second tier (items 15, 59) ---- */
+  @keyframes fade { from { opacity: 0; } }
+  .sheet-back {
+    position: fixed; inset: 0; z-index: 890; background: rgba(4,7,14,.55);
+    backdrop-filter: blur(8px); -webkit-backdrop-filter: blur(8px);
+    display: flex; align-items: flex-end; justify-content: center; padding: 18px;
+    animation: fade .16s ease;
+  }
+  .sheet {
+    width: min(720px, 100%); max-height: min(72dvh, 620px); overflow: auto;
+    background: rgba(18,22,32,.94); border: 1px solid rgba(255,255,255,.09);
+    border-radius: 24px; padding: 16px 18px 20px;
+    box-shadow: 0 30px 80px rgba(0,0,0,.55);
+    /* Item 59: spring-in, not a linear slide. */
+    animation: spring-in .34s cubic-bezier(.2,.9,.3,1.2);
+    display: flex; flex-direction: column; gap: 14px;
+  }
+  .sheet-head { display: flex; align-items: center; justify-content: space-between; }
+  .sheet .x { width: 34px; height: 34px; border: 0; border-radius: 50%; background: rgba(255,255,255,.08); color: inherit; display: grid; place-items: center; }
+  .sgroup { display: flex; flex-direction: column; gap: 8px; }
+  .sgrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
+  .sgrid button { display: flex; align-items: center; gap: 10px; padding: 11px 12px; border: 1px solid rgba(255,255,255,.07); border-radius: 14px; background: rgba(255,255,255,.045); color: var(--text); font: inherit; font-size: .92em; text-align: left; }
+  .sgrid button.on { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 16%, transparent); }
+  .smark { flex: none; display: inline-grid; place-items: center; width: 1.9em; height: 1.9em; border-radius: 30%; background: rgba(255,255,255,.07); }
+  .sgrid button.on .smark { background: var(--accent); color: #08101c; }
+  .sname { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 </style>

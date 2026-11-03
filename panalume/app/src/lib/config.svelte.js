@@ -96,6 +96,8 @@ export const app = $state({
   multi: [], // extra indices selected (shift/ctrl-click or drag-select)
   single: false, // edit one card of a group on its own
   popup: null, // { cardId } | { entity }
+  dockSheet: false, // the navigation card's second tier ("more") is open
+  dockHidden: false, // the navigation card has auto-hidden; shown again on a touch
   dirty: false,
   saving: false,
   panel: null, // 'card' | 'theme' | 'views' | 'add'
