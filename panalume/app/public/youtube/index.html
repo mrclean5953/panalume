@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>YouTube</title>
+<style>
+  :root { --ink:#eef2f8; --mute:#93a0b4; --glass:rgba(255,255,255,.055); --line:rgba(255,255,255,.12); --accent:#22d3ee; }
+  * { box-sizing:border-box; }
+  html,body { margin:0; height:100%; background:#0d1117 !important; color:#f8fafc !important;
+    font:14px/1.35 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif; overflow:hidden; }
+  #app { display:flex; flex-direction:column; height:100%; padding:10px 12px 6px; gap:9px; }
+  .bar { display:flex; gap:8px; }
+  .bar input { flex:1; min-width:0; padding:11px 15px; border-radius:14px; color:var(--ink);
+    background:rgba(255,255,255,.06); border:1px solid var(--line); outline:none; font-size:14px; }
+  .bar input::placeholder { color:#7e8b9e; }
+  .bar input:focus { border-color:rgba(34,211,238,.6); box-shadow:0 0 0 3px rgba(34,211,238,.12); }
+  .bar button { padding:0 18px; border-radius:14px; border:1px solid rgba(34,211,238,.45);
+    background:rgba(34,211,238,.16); color:#d7fbff; font-weight:700; cursor:pointer; }
+  .bar button:active { transform:scale(.97); }
+  .pills { display:flex; gap:7px; flex-wrap:nowrap; overflow-x:auto; scrollbar-width:none; min-height:36px; flex-shrink:0; align-items:center; }
+  .pills::-webkit-scrollbar { display:none; }
+  .pill { padding:6px 14px; line-height:1.2; min-height:30px; border-radius:999px; white-space:nowrap; cursor:pointer;
+    background:rgba(255,255,255,.05); border:1px solid var(--line); color:var(--mute); font-size:12.5px; font-weight:600; }
+  .pill.on { background:rgba(34,211,238,.18); border-color:rgba(34,211,238,.55); color:#d7fbff; }
+  #grid { display:grid; grid-template-columns:repeat(3,1fr); gap:11px; overflow-y:auto; padding-bottom:6px;
+    scrollbar-width:thin; scrollbar-color:rgba(255,255,255,.18) transparent; }
+  #grid::-webkit-scrollbar { width:8px; }
+  #grid::-webkit-scrollbar-thumb { background:rgba(255,255,255,.16); border-radius:8px; }
+  .v { cursor:pointer; }
+  .thumb { position:relative; border-radius:13px; overflow:hidden; background:rgba(255,255,255,.05);
+    border:1px solid var(--line); aspect-ratio:16/9; }
+  .thumb img { width:100%; height:100%; object-fit:cover; display:block; }
+  .dur { position:absolute; right:6px; bottom:6px; padding:2px 6px; border-radius:6px;
+    background:rgba(6,9,14,.82); font-size:10.5px; font-weight:700; color:#dbe6f3; }
+  .dur.live { background:#dc2626; color:#fff; letter-spacing:.06em; }
+  .v:hover .thumb { border-color:rgba(34,211,238,.55); }
+  .t { margin-top:6px; font-size:12.5px; font-weight:600; line-height:1.28; color:var(--ink);
+    display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden; }
+  .c { font-size:11px; color:var(--mute); margin-top:2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .note { padding:22px; text-align:center; color:var(--mute); font-size:13px; grid-column:1/-1; }
+  .sk { border-radius:13px; aspect-ratio:16/9; background:linear-gradient(100deg,rgba(255,255,255,.05),rgba(255,255,255,.11),rgba(255,255,255,.05));
+    background-size:200% 100%; animation:sk 1.2s linear infinite; }
+  @keyframes sk { to { background-position:-200% 0; } }
+  #modal { position:fixed; inset:0; z-index:9; display:none; align-items:center; justify-content:center;
+    background:rgba(4,7,12,.72); backdrop-filter:blur(16px); padding:2.5vh 2vw; }
+  #modal.on { display:flex; }
+  .sheet { position:relative; width:min(96vw,1240px); }
+  .sheet iframe { width:100%; aspect-ratio:16/9; border:0; border-radius:20px; display:block;
+    background:#000; box-shadow:0 30px 90px rgba(0,0,0,.65); border:1px solid rgba(255,255,255,.14); }
+  .x { position:absolute; right:-10px; top:-42px; width:34px; height:34px; border-radius:50%;
+    border:1px solid var(--line); background:rgba(255,255,255,.1); color:#fff; font-size:17px; cursor:pointer; line-height:1; }
+  .cap { margin-top:9px; font-size:13px; color:var(--mute); text-align:center; }
+  @media (max-width:760px) { #grid { grid-template-columns:repeat(2,1fr); } }
+</style>
+</head>
+<body>
+<div id="app">
+  <div class="bar">
+    <input id="q" type="search" autocomplete="off" placeholder="Search YouTube, or paste a video link…">
+    <button id="go">Search</button>
+  </div>
+  <div class="pills" id="pills"></div>
+  <div id="grid"></div>
+</div>
+<div id="modal">
+  <div class="sheet">
+    <button class="x" id="close" aria-label="Close">×</button>
+    <iframe id="frame" allow="autoplay; encrypted-media; picture-in-picture; fullscreen"
+            allowfullscreen referrerpolicy="strict-origin-when-cross-origin"></iframe>
+    <div class="cap" id="cap"></div>
+  </div>
+</div>
+<script>
+(function () {
+  var API = [
+    'https://api.piped.private.coffee',
+    'https://pipedapi.adminforge.de',
+    'https://pipedapi.kavin.rocks'
+  ];
+  var PILLS = [
+    {k:'trending', label:'Trending', kind:'trending'},
+    {k:'music',    label:'Music',    q:'music'},
+    {k:'tech',     label:'Tech',     q:'technology review'},
+    {k:'comedy',   label:'Comedy',   q:'comedy'},
+    {k:'news',     label:'News',     q:'news'},
+    {k:'gaming',   label:'Gaming',   q:'gaming'},
+    {k:'docs',     label:'Docs',     q:'documentary'},
+    {k:'podcasts', label:'Podcasts', q:'podcast'}
+  ];
+  var grid = document.getElementById('grid');
+  var pills = document.getElementById('pills');
+  var q = document.getElementById('q');
+  var modal = document.getElementById('modal');
+  var frame = document.getElementById('frame');
+  var cap = document.getElementById('cap');
+  var active = 'trending';
+  var cacheKey = 'yt.cache.v1';
+
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"]/g, function (c) {
+    return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]; }); }
+
+  function secs(d) {
+    if (!d) return '';
+    var m = Math.floor(d / 60), s = d % 60;
+    return (m >= 60 ? Math.floor(m / 60) + ':' + String(m % 60).padStart(2, '0') : m) + ':' + String(s).padStart(2, '0');
+  }
+
+  function videoId(text) {
+    var m = String(text).match(/(?:v=|youtu\.be\/|\/shorts\/|\/embed\/|\/live\/)([A-Za-z0-9_-]{11})/);
+    return m ? m[1] : (/^[A-Za-z0-9_-]{11}$/.test(text.trim()) ? text.trim() : '');
+  }
+
+  function play(id, title) {
+    frame.src = 'https://www.youtube-nocookie.com/embed/' + id + '?autoplay=1&rel=0&playsinline=1';
+    cap.textContent = title || '';
+    modal.classList.add('on');
+  }
+  function close() { modal.classList.remove('on'); frame.src = 'about:blank'; }
+
+  function draw(list) {
+    if (!list || !list.length) {
+      grid.innerHTML = '<div class="note">Nothing to show yet. Try a search above.</div>';
+      return;
+    }
+    grid.innerHTML = list.map(function (v) {
+      return '<div class="v" data-id="' + esc(v.id) + '" data-t="' + esc(v.title) + '">' +
+        '<div class="thumb"><img loading="lazy" alt="" src="https://i.ytimg.com/vi/' + esc(v.id) + '/mqdefault.jpg">' +
+        (v.duration > 0 ? '<span class="dur">' + esc(secs(v.duration)) + '</span>'
+                        : '<span class="dur live">LIVE</span>') + '</div>' +
+        '<div class="t">' + esc(v.title) + '</div>' +
+        '<div class="c">' + esc(v.channel || v.uploaderName || '') + '</div></div>';
+    }).join('');
+  }
+
+  function skeletons(n) {
+    grid.innerHTML = new Array(n || 9).fill('<div class="sk"></div>').join('');
+  }
+
+  function get(path) {
+    // try each instance until one answers
+    var i = 0;
+    function attempt() {
+      if (i >= API.length) return Promise.reject(new Error('all endpoints down'));
+      var base = API[i++];
+      var ctl = new AbortController();
+      var t = setTimeout(function () { ctl.abort(); }, 7000);
+      return fetch(base + path, { signal: ctl.signal, mode: 'cors' })
+        .then(function (r) { clearTimeout(t); if (!r.ok) throw new Error(r.status); return r.json(); })
+        .catch(function (e) { clearTimeout(t); return attempt(); });
+    }
+    return attempt();
+  }
+
+  function normalise(items) {
+    if (items && !Array.isArray(items)) items = items.items || items.relatedStreams || [];
+    return (items || []).filter(function (it) { return it && it.url; }).map(function (it) {
+      var id = (it.url.match(/v=([A-Za-z0-9_-]{11})/) || [])[1] || '';
+      return { id: id, title: it.title, duration: it.duration, channel: it.uploaderName };
+    }).filter(function (v) { return v.id; }).slice(0, 24);
+  }
+
+  function load(pill) {
+    active = pill.k;
+    [].forEach.call(pills.children, function (p) { p.classList.toggle('on', p.dataset.k === pill.k); });
+    if (pill.q) q.value = pill.q;
+    skeletons(9);
+    var path = pill.kind === 'trending'
+      ? '/trending?region=CA'
+      : '/search?q=' + encodeURIComponent(pill.q) + '&filter=videos';
+    get(path).then(function (data) {
+      var list = normalise(Array.isArray(data) ? data : (data.items || data.relatedStreams || []));
+      draw(list);
+      try { localStorage.setItem(cacheKey, JSON.stringify({ k: pill.k, list: list, at: Date.now() })); } catch (e) {}
+    }).catch(function () {
+      var cached = null;
+      try { cached = JSON.parse(localStorage.getItem(cacheKey) || 'null'); } catch (e) {}
+      if (cached && cached.list && cached.list.length) {
+        draw(cached.list);
+        grid.insertAdjacentHTML('afterbegin',
+          '<div class="note" style="grid-column:1/-1;padding:8px">Search is offline — showing what loaded last.</div>');
+      } else {
+        grid.innerHTML = '<div class="note">The video sources are not answering right now.<br>' +
+          'Paste a video link above and press Search to play it anyway.</div>';
+      }
+    });
+  }
+
+  PILLS.forEach(function (p) {
+    var b = document.createElement('button');
+    b.className = 'pill'; b.textContent = p.label; b.dataset.k = p.k;
+    b.addEventListener('click', function () { load(p); });
+    pills.appendChild(b);
+  });
+
+  document.getElementById('go').addEventListener('click', function () {
+    var text = q.value.trim();
+    if (!text) return;
+    var id = videoId(text);
+    if (id) { play(id, 'Pasted link'); return; }
+    [].forEach.call(pills.children, function (p) { p.classList.remove('on'); });
+    active = 'search';
+    skeletons(9);
+    get('/search?q=' + encodeURIComponent(text) + '&filter=videos').then(function (data) {
+      draw(normalise(Array.isArray(data) ? data : (data.items || data.relatedStreams || [])));
+    }).catch(function () {
+      grid.innerHTML = '<div class="note">No answer from the video sources. Check the panel’s internet and try again.</div>';
+    });
+  });
+  q.addEventListener('keydown', function (e) { if (e.key === 'Enter') document.getElementById('go').click(); });
+
+  grid.addEventListener('click', function (e) {
+    var v = e.target.closest('.v');
+    if (v) play(v.dataset.id, v.dataset.t);
+  });
+  document.getElementById('close').addEventListener('click', close);
+  modal.addEventListener('click', function (e) { if (e.target === modal) close(); });
+  document.addEventListener('keydown', function (e) { if (e.key === 'Escape') close(); });
+
+  // paint from cache first so the grid is never empty, then refresh
+  var cached = null;
+  try { cached = JSON.parse(localStorage.getItem(cacheKey) || 'null'); } catch (e) {}
+  if (cached && cached.list && cached.list.length) draw(cached.list);
+  load(PILLS[0]);
+})();
+</script>
+</body>
+</html>
