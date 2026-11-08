@@ -56,16 +56,15 @@
     if (period === 'month') { const m = new Date(d); m.setDate(1); return m.getTime(); }
     return d.getTime();
   });
-  // The window before this one (yesterday / last week / last month), so each bar
-  // can show what the same circuit used then. Statistics come back in day buckets
-  // from local midnight, so the windows line up on bucket edges.
-  const prevStart = $derived.by(() => {
-    if (period === 'week') return start - 7 * 864e5;
-    if (period === 'month') { const d = new Date(start); return new Date(d.getFullYear(), d.getMonth() - 1, 1).getTime(); }
-    return start - 864e5;
-  });
 
-  const grid = $derived((prefs?.energy_sources || []).find((x) => x.type === 'grid'));
+  // The grid's import meter and price, in either shape HA stores them (flat, or under flow_from).
+  const grid = $derived.by(() => {
+    const g = (prefs?.energy_sources || []).find((x) => x.type === 'grid');
+    return g ? { ...(g.flow_from?.[0] || {}), ...Object.fromEntries(Object.entries(g).filter(([, v]) => v != null && v !== '')) } : null;
+  });
+  // HA keeps a cost statistic beside the import meter when a price is set; with it the
+  // card prices each window at the average rate actually paid (right for time-of-use tariffs).
+  const costId = $derived(grid?.stat_energy_from && (grid.stat_cost || grid.entity_energy_price || grid.number_energy_price != null) ? grid.stat_cost || `${grid.stat_energy_from}_cost` : '');
   const houseId = $derived((props.house ? String(t(props.house)).trim() : '') || grid?.stat_energy_from || '');
   const circuits = $derived.by(() => {
     const own = (props.entities || []).filter((x) => x && typeof x === 'string').map((x) => String(t(x)).trim()).filter(Boolean);
@@ -79,41 +78,27 @@
 
   // kWh for one entity over the selected window. Only increases are summed: a meter that
   // was reset or re-added writes one negative step into its own history.
-  function sumOver(id, from, to) {
-    let v = 0, seen = false;
-    for (const r of stats[id] || []) {
-      const t = Date.parse(r.start || '');
-      if (Number.isFinite(t) && (t < from || t >= to)) continue;
-      seen = true;
-      v += Math.max(0, r.change || 0);
-    }
-    return { v, seen };
-  }
   function valueOf(id) {
-    let { v } = sumOver(id, start, now + 1);
+    let v = (stats[id] || []).reduce((a, r) => a + Math.max(0, r.change || 0), 0);
     if (period === 'day') {
       const e = ent(id), live = Number(e?.state);
-      // A daily meter (state_class "total") is exact to the minute; statistics lag ~5 min.
-      if (Number.isFinite(live) && e?.attributes?.state_class === 'total' && live > v) v = live;
+      // A daily meter (state_class "total", reset today) is exact to the minute; statistics
+      // lag ~5 min. A lifetime counter is also "total" but has no recent reset: leave it be.
+      const reset = Date.parse(e?.attributes?.last_reset || '');
+      if (Number.isFinite(live) && e?.attributes?.state_class === 'total' && reset >= start && live > v) v = live;
     }
     return v;
-  }
-  // Yesterday's (or last week's / last month's) figure, or null when the recorder
-  // has no rows for it — a missing period draws no ghost rather than a zero one.
-  function prevOf(id) {
-    const { v, seen } = sumOver(id, prevStart, start);
-    return seen ? v : null;
   }
 
   async function load() {
     if (!conn.connected) return;
     try {
       prefs ??= await send({ type: 'energy/get_prefs' });
-      const ids = [houseId, ...circuits].filter(Boolean);
+      const ids = [houseId, costId, ...circuits].filter(Boolean);
       if (!circuits.length) { stats = {}; return void (error = 'No circuits yet: add them in Settings → Dashboards → Energy, or pick entities here.'); }
       stats = (await send({
         type: 'recorder/statistics_during_period',
-        start_time: new Date(prevStart).toISOString(), end_time: new Date().toISOString(),
+        start_time: new Date(start).toISOString(), end_time: new Date().toISOString(),
         period: 'day', statistic_ids: ids, types: ['change'], units: { energy: 'kWh' },
       })) || {};
       error = '';
@@ -122,7 +107,7 @@
     }
   }
   $effect(() => {
-    period; start; prevStart; houseId; circuits.join(); conn.connected;
+    period; start; houseId; circuits.join(); conn.connected;
     load();
     const a = setInterval(load, 60e3);
     const b = setInterval(() => (now = Date.now()), 30e3);
@@ -142,7 +127,15 @@
     const n = Number(grid?.number_energy_price);
     return Number.isFinite(n) && n > 0 ? n : null;
   });
-  const money = (kwh) => (tariff == null ? null : kwh * tariff);
+  // Average rate paid over the window (cost ÷ kWh imported), when HA records the cost.
+  const avgRate = $derived.by(() => {
+    if (!costId || !grid?.stat_energy_from) return null;
+    const sum = (id) => (stats[id] || []).reduce((a, r) => a + Math.max(0, r.change || 0), 0);
+    const kwh = sum(grid.stat_energy_from), cost = sum(costId);
+    return kwh > 0.05 && cost > 0 ? cost / kwh : null;
+  });
+  const rate = $derived(props.price ? tariff : avgRate ?? tariff);
+  const money = (kwh) => (rate == null ? null : kwh * rate);
 
   // "Washing Machine Energy Today" inside a card that is entirely energy → "Washing Machine".
   const METER = /\s+(?:energy\s+)?(?:this\s+(?:month|year|week)|today|yesterday|total|usage)$/i;
@@ -152,14 +145,11 @@
     return short || full || id.split('.').slice(1).join(' ');
   };
   const rows = $derived.by(() => circuits
-    .map((id) => ({ id, label: labelOf(id), kwh: valueOf(id), prev: prevOf(id) }))
+    .map((id) => ({ id, label: labelOf(id), kwh: valueOf(id) }))
     .sort((a, b) => b.kwh - a.kwh));
   const metered = $derived(rows.reduce((a, r) => a + r.kwh, 0));
   const house = $derived(houseId ? valueOf(houseId) : 0);
-  // One scale for today and yesterday, so the ghost sits at its true length.
-  const top = $derived(Math.max(0.001, ...rows.map((r) => Math.max(r.kwh, r.prev ?? 0))));
-  const hasGhost = $derived(rows.some((r) => r.prev != null));
-  const prevLabel = $derived(period === 'week' ? 'last week' : period === 'month' ? 'last month' : 'yesterday');
+  const top = $derived(Math.max(0.001, ...rows.map((r) => r.kwh)));
 
   // Fit the list to what the cell can actually hold; reserve one row for the tail.
   const ROW = 30, GAP = 6;
@@ -204,7 +194,7 @@
       {#if show('tariff') && money(house || metered) != null}
         <div class="t money">
           <b>{fmtMoney(money(house || metered))}</b>
-          <span>at {fmtRate(tariff)}/kWh</span>
+          <span>at {fmtRate(rate)}/kWh{avgRate != null && !props.price ? ' average' : ''}</span>
         </div>
       {/if}
     </div>
@@ -216,11 +206,7 @@
         <div class="row" style="--c:{C[i % C.length]}">
           <span class="dot"></span>
           <span class="nm">{r.label}</span>
-          <span class="bar">
-            {#if r.prev != null}<i class="gh" style="width:{Math.max(1, (r.prev / top) * 100)}%" title="{prevLabel} {fmtNum(r.prev, 1)} kWh"></i>{/if}
-            <i class="fl" style="width:{Math.max(2, (r.kwh / top) * 100)}%"></i>
-            {#if r.prev != null}<i class="tick" style="left:calc({Math.max(1, (r.prev / top) * 100)}% - 1px)"></i>{/if}
-          </span>
+          <span class="bar"><i style="width:{Math.max(2, (r.kwh / top) * 100)}%"></i></span>
           <span class="kwh">{fmtNum(r.kwh, r.kwh >= 100 ? 0 : r.kwh >= 10 ? 1 : 2)}<small>kWh</small></span>
           {#if show('tariff')}<span class="cost">{money(r.kwh) == null ? '' : fmtMoney(money(r.kwh))}</span>{/if}
         </div>
@@ -229,11 +215,8 @@
     </div>
   {/if}
 
-  {#if hasGhost || (show('tariff') && tariff != null)}
-    <div class="foot">
-      {#if hasGhost}<span class="key" title="{prevLabel}, drawn as a thin pale bar behind today"><i></i>{prevLabel}</span>{/if}
-      {#if show('tariff') && tariff != null}<span class="tt">{label} · priced at {fmtRate(tariff)}/kWh from your Energy settings; delivery and fixed charges are extra</span>{/if}
-    </div>
+  {#if show('tariff') && rate != null}
+    <div class="foot">{label} · priced at {avgRate != null && !props.price ? `an average ${fmtRate(rate)}/kWh, what you paid over this period` : `${fmtRate(rate)}/kWh from your Energy settings`}; delivery and fixed charges are extra</div>
   {/if}
 </div>
 
@@ -256,20 +239,13 @@
   .row { flex: none; height: 30px; display: flex; align-items: center; gap: 8px; }
   .dot { width: 8px; height: 8px; border-radius: 3px; background: var(--c); flex: none; }
   .nm { flex: 1 1 auto; min-width: 0; font-size: .82em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .bar { position: relative; flex: 0 1 30%; width: 30%; height: 8px; border-radius: 4px; background: rgba(255,255,255,.07); }
-  .bar i { position: absolute; left: 0; display: block; border-radius: 4px; transition: width .45s ease; }
-  .bar .fl { top: 0; height: 6px; background: var(--c); }
-  /* Yesterday, behind: the ghost's lower 2px stays visible under today's bar. */
-  .bar .gh { bottom: 0; height: 8px; background: rgba(255,255,255,.17); }
-  .bar .tick { top: -1px; bottom: -1px; width: 2px; border-radius: 1px; background: rgba(255,255,255,.62); }
+  .bar { flex: 0 1 30%; width: 30%; height: 6px; border-radius: 3px; background: rgba(255,255,255,.07); overflow: hidden; }
+  .bar i { display: block; height: 100%; background: var(--c); border-radius: 3px; }
   .kwh { flex: none; font-size: .82em; font-variant-numeric: tabular-nums; text-align: right; min-width: 4.6em; }
   .kwh small { font-size: .8em; color: var(--muted); margin-left: .15em; }
   .cost { flex: none; width: 4.4em; text-align: right; font-size: .82em; font-variant-numeric: tabular-nums; color: var(--muted); }
   .more { flex: none; font-size: .74em; color: var(--muted); padding-left: 16px; }
-  .foot { flex: none; display: flex; align-items: center; gap: 10px; min-width: 0; font-size: .68em; color: var(--muted); white-space: nowrap; }
-  .foot .tt { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-  .key { flex: none; display: inline-flex; align-items: center; gap: 5px; }
-  .key i { width: 12px; height: 3px; border-radius: 2px; background: rgba(255,255,255,.32); }
+  .foot { flex: none; font-size: .68em; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   @container (max-width: 380px) {
     .nm { font-size: .78em; }
     .bar { display: none; }
@@ -283,5 +259,4 @@
     .seg { padding: 3px 7px; }
   }
   @container (max-height: 220px) { .foot { display: none; } .tots span { display: none; } }
-  @media (prefers-reduced-motion: reduce) { .bar i { transition: none; } }
 </style>

@@ -30,11 +30,6 @@
   // or a list. The sensors already carry the artwork, dates and links, so the
   // card only reads their data attribute; tapping an item opens it in Sonarr,
   // Radarr or whichever app the sensor came from.
-  //
-  // Item 47: one hero per card. In the poster layout the next thing to arrive is
-  // a wide banner tile, everything after it is a secondary poster tile. Item 32:
-  // a secondary tile zooms its artwork ~6% on pointer hover, inside its own
-  // overflow-hidden frame, and its title is painted white → source accent.
   import Icon from '../components/Icon.svelte';
   import { t } from '../lib/tpl.js';
   import { haImage } from '../lib/ha.svelte.js';
@@ -93,7 +88,6 @@
           rating: String(raw.rating || ''),
           runtime: Number(raw.runtime) || 0,
           genres: String(raw.genres || ''),
-          fanart: String(raw.fanart || ''),
           summary: String(raw.summary || ''),
           link: String(raw.deep_link || ''),
           src,
@@ -106,16 +100,7 @@
     out.sort((a, b) => (a.date?.getTime() ?? Infinity) - (b.date?.getTime() ?? Infinity) || a.title.localeCompare(b.title));
     return out.filter((it) => !it.date || (it.date >= from && it.date < to)).slice(0, Math.max(1, Number(props.max) || 6));
   });
-  const hero = $derived(items[0] || null);
-  const rest = $derived(items.slice(1));
   const configured = $derived(ids.length > 0);
-  const down = $derived(configured && ids.every((id) => states.get(id)?.state === 'unavailable'));
-  // A poster URL that 404s paints a broken-image glyph and nothing else — the
-  // picture is remembered per item and the tile falls back to its own artwork.
-  let failed = $state(new Set());
-  const backdrop = (it) => it.fanart || it.poster || '';
-  const showArt = (it) =>
-    !!it.poster && !failed.has(it.key) && (layout === 'posters' || it.poster.startsWith('/'));
 
   const midnight = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x.getTime(); };
   function dayLabel(d) {
@@ -157,8 +142,8 @@
   const tip = (it) => [it.title, it.number, it.episode, it.summary].filter(Boolean).join('\n');
 </script>
 
-<div class="up {layout}" class:tight>
-  <div class="head microcaps">{t(props.title) || 'Upcoming'}</div>
+<div class="up" class:tight>
+  {#if props.title}<div class="head">{t(props.title)}</div>{/if}
 
   {#if !configured}
     <div class="none">
@@ -167,79 +152,30 @@
     </div>
   {:else if !items.length}
     <div class="none">
-      <Icon icon={down ? 'mdi:cloud-off-outline' : 'mdi:movie-open-check-outline'} size="2em" />
-      <div>{down ? 'Sensor unavailable.' : 'Nothing coming up.'}</div>
-    </div>
-  {:else if layout === 'posters'}
-    <div class="posters">
-      <!-- Item 47: the next release is the hero — a wide banner with the fanart
-           behind it and the poster itself as an upright thumbnail. -->
-      <a class="it hero" href={hero.link || undefined} target={hero.link ? '_blank' : undefined} rel="noopener"
-         title={tip(hero)} style="--src:{hero.src.color}" aria-label={[hero.title, whenLabel(hero)].filter(Boolean).join(', ')}>
-        {#if backdrop(hero)}
-          <div class="hfan" style="background-image:url('{haImage(backdrop(hero))}')" aria-hidden="true"></div>
-        {/if}
-        <div class="hshade" aria-hidden="true"></div>
-        {#if showArt(hero)}
-          <img class="hposter" src={haImage(hero.poster)} alt="" loading="lazy" decoding="async"
-               onerror={() => (failed = new Set([...failed, hero.key]))} />
-        {:else}
-          <div class="hposter blank"><Icon icon="mdi:movie-open-outline" size="1.6em" /></div>
-        {/if}
-        <div class="htxt">
-          {#if props.show_source !== false}<span class="chip src">{hero.src.name}</span>{/if}
-          <div class="t grad">{hero.title}</div>
-          {#if subLabel(hero)}<div class="s num">{subLabel(hero)}</div>{/if}
-          <div class="d num">{dateLine(hero)}</div>
-        </div>
-        {#if props.show_rating !== false && hero.rating}<span class="rate num">{hero.rating}</span>{/if}
-      </a>
-
-      {#if rest.length}
-        <div class="strip">
-          {#each rest as it (it.key)}
-            <a class="it tile" href={it.link || undefined} target={it.link ? '_blank' : undefined} rel="noopener"
-               title={tip(it)} style="--src:{it.src.color}" aria-label={[it.title, whenLabel(it)].filter(Boolean).join(', ')}>
-              <div class="art">
-                {#if backdrop(it)}
-                  <div class="fan" style="background-image:url('{haImage(backdrop(it))}')" aria-hidden="true"></div>
-                {/if}
-                {#if showArt(it)}
-                  <img src={haImage(it.poster)} alt="" loading="lazy" decoding="async"
-                       onerror={() => (failed = new Set([...failed, it.key]))} />
-                {:else}
-                  <div class="blank"><Icon icon="mdi:movie-open-outline" size="1.4em" /></div>
-                {/if}
-                {#if props.show_source !== false}<span class="chip src">{it.src.name}</span>{/if}
-                {#if props.show_rating !== false && it.rating}<span class="rate num">{it.rating}</span>{/if}
-              </div>
-              <div class="txt">
-                <div class="t grad">{it.title}</div>
-                {#if subLabel(it)}<div class="s num">{subLabel(it)}</div>{/if}
-                {#if !tight}<div class="d num">{dateLine(it)}</div>{/if}
-              </div>
-            </a>
-          {/each}
-        </div>
-      {/if}
+      <Icon icon="mdi:movie-open-check-outline" size="2em" />
+      <div>Nothing coming up.</div>
     </div>
   {:else}
-    <div class="grid list">
+    <div class="grid {layout}">
       {#each items as it (it.key)}
-        <a class="it row" href={it.link || undefined} target={it.link ? '_blank' : undefined} rel="noopener"
+        <a class="it" href={it.link || undefined} target={it.link ? '_blank' : undefined} rel="noopener"
            title={tip(it)} style="--src:{it.src.color}" aria-label={[it.title, whenLabel(it)].filter(Boolean).join(', ')}>
           <div class="art">
-            {#if showArt(it)}
-              <img src={haImage(it.poster)} alt="" loading="lazy" decoding="async"
-                   onerror={() => (failed = new Set([...failed, it.key]))} />
+            <!-- Pictures from outside Home Assistant (e.g. TMDB) only with the Posters layout, which says so. -->
+            {#if it.poster && (layout === 'posters' || it.poster.startsWith('/'))}
+              <img src={haImage(it.poster)} alt="" loading="lazy" />
             {:else}
-              <div class="blank"><Icon icon="mdi:movie-open-outline" size="1.4em" /></div>
+              <div class="blank"><Icon icon="mdi:movie-open-outline" size="1.6em" /></div>
             {/if}
+            {#if props.show_source !== false}<span class="src">{it.src.name}</span>{/if}
+            {#if props.show_rating !== false && it.rating}<span class="rate">{it.rating}</span>{/if}
           </div>
           <div class="txt">
             <div class="t">{it.title}</div>
-            {#if subLabel(it)}<div class="s num">{subLabel(it)}</div>{/if}
-            <div class="d num">{dateLine(it)}{#if extraLabel(it)} · {extraLabel(it)}{/if}</div>
+            {#if subLabel(it)}<div class="s">{subLabel(it)}</div>{/if}
+            {#if layout === 'list' || !tight}
+              <div class="d">{dateLine(it)}{#if layout === 'list' && extraLabel(it)} · {extraLabel(it)}{/if}</div>
+            {/if}
           </div>
         </a>
       {/each}
@@ -248,86 +184,44 @@
 </div>
 
 <style>
-  /* Item 60: the card is its own size container, so type and gaps answer to the
-     card rather than the page, and a small tile never overflows. */
-  .up { height: 100%; display: flex; flex-direction: column; gap: min(9px, 2.6cqh); min-height: 0; container-type: size; }
-  .head { flex: none; } /* .microcaps from app.css (item 46) */
+  .up { height: 100%; display: flex; flex-direction: column; gap: 10px; min-height: 0; }
+  .head { font-weight: 600; font-size: 1.1em; }
   .none { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; color: var(--muted); text-align: center; font-size: .92em; }
 
-  .it { min-width: 0; min-height: 0; display: flex; color: inherit; text-decoration: none; -webkit-tap-highlight-color: transparent; }
-  .it:active { opacity: .85; }
-
-  /* ---- poster layout: hero banner over a strip of secondary tiles ---- */
-  .posters { flex: 1; min-height: 0; display: flex; flex-direction: column; gap: min(8px, 2.2cqh); }
-
-  .hero { position: relative; flex: 1.35 1 0; min-height: 0; border-radius: min(16px, 4cqh); overflow: hidden; align-items: flex-end; isolation: isolate; background: rgba(255,255,255,.05); }
-  .hfan { position: absolute; inset: -12%; background-size: cover; background-position: center; filter: blur(18px) brightness(.5) saturate(1.35); z-index: -2; }
-  .hshade { position: absolute; inset: 0; z-index: -1; background: linear-gradient(90deg, rgba(5,7,12,.86) 0%, rgba(5,7,12,.5) 48%, rgba(5,7,12,.18) 100%), linear-gradient(180deg, transparent 40%, rgba(5,7,12,.72)); }
-  .hposter { flex: none; height: calc(100% - min(20px, 5cqh)); margin: min(10px, 2.6cqh); aspect-ratio: 2 / 3; object-fit: cover; border-radius: min(10px, 2.2cqh); box-shadow: 0 8px 22px rgba(0,0,0,.5); background: rgba(255,255,255,.06); }
-  .hposter.blank { display: grid; place-items: center; color: var(--muted); }
-  .htxt { flex: 1; min-width: 0; padding: 0 min(12px, 2.6cqw) min(10px, 2.4cqh) 0; display: flex; flex-direction: column; gap: min(4px, 1cqh); }
-  .hero .t { font-size: min(1.5em, 5.4cqw, 14cqh); line-height: 1.12; font-weight: 650; display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; overflow: hidden; letter-spacing: -.01em; }
-  .hero .s { color: rgba(255,255,255,.82); font-size: min(.84em, 3cqw, 6.4cqh); }
-  .hero .d { color: rgba(255,255,255,.72); font-size: min(.8em, 2.9cqw, 6cqh); display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-  .chip { font-size: min(.68em, 2.4cqw); font-weight: 650; padding: 1px 6px; border-radius: 7px; line-height: 1.6; letter-spacing: .02em; }
-  .hero .chip { align-self: flex-start; background: var(--src); color: #071018; }
-
-  /* Secondary tiles: artwork fills the tile, title under a bottom scrim.
-     Item 32: the artwork scales inside an overflow-hidden rounded frame. */
-  .strip { flex: 1 1 0; min-height: 0; display: flex; gap: min(8px, 1.9cqw); overflow: hidden; }
-  .tile { position: relative; flex: 1 1 0; min-width: min(58px, 15cqw); flex-direction: column; justify-content: flex-end; border-radius: min(12px, 3cqh); overflow: hidden; background: rgba(255,255,255,.05); }
-  .tile .art { position: absolute; inset: 0; overflow: hidden; border-radius: inherit; }
-  .fan { position: absolute; inset: -18%; background-size: cover; background-position: center; filter: blur(18px) brightness(.42) saturate(1.5); }
-  .tile .art img { position: relative; z-index: 1; width: 100%; height: 100%; object-fit: cover; display: block; transform-origin: 50% 42%; }
-  .tile .blank { position: relative; z-index: 1; width: 100%; height: 100%; display: grid; place-items: center; color: var(--muted); background: radial-gradient(120% 90% at 50% 12%, rgba(255,255,255,.08), transparent 72%); border: 1px solid rgba(255,255,255,.07); border-radius: inherit; }
-  .tile .txt { position: relative; padding: min(22px, 6cqh) min(8px, 1.8cqw) min(7px, 1.8cqh); background: linear-gradient(180deg, transparent, rgba(6,8,14,.6) 36%, rgba(6,8,14,.94)); }
-  .tile .t { font-size: min(.84em, 2.7cqw, 4.4cqh); line-height: 1.2; font-weight: 600; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-  .tile .s { color: rgba(255,255,255,.8); font-size: min(.74em, 2.4cqw); line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .tile .d { color: rgba(255,255,255,.72); font-size: min(.72em, 2.3cqw); line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-
-  .chip.src { position: absolute; top: min(6px, 1.6cqh); left: min(6px, 1.6cqw); background: var(--src); color: #071018; max-width: calc(100% - 12px); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .rate { position: absolute; top: min(6px, 1.6cqh); right: min(6px, 1.6cqw); font-size: min(.7em, 2.5cqw); font-weight: 600; padding: 1px 6px; border-radius: 7px; line-height: 1.6; background: rgba(6,8,14,.62); color: #fff; }
-  .hero .rate { top: min(10px, 2.6cqh); right: min(10px, 2.6cqw); font-size: min(.78em, 2.6cqw); }
-
-  /* Item 52: numbers that stack (ratings, S1·E2, dates) hold their column. */
-  .num, .rate, .d, .s { font-variant-numeric: tabular-nums; font-feature-settings: 'tnum' 1; }
-
-  /* Item 32: white → accent title, with a flat colour underneath for engines
-     that cannot clip text to a background. */
-  .t.grad { color: #fff; }
-  @supports ((-webkit-background-clip: text) or (background-clip: text)) {
-    .t.grad {
-      background-image: linear-gradient(96deg, #fff 22%, var(--src, var(--accent)) 118%);
-      -webkit-background-clip: text; background-clip: text;
-      color: transparent; -webkit-text-fill-color: transparent;
-      filter: drop-shadow(0 1px 2px rgba(0,0,0,.55));
-    }
-  }
-
-  /* Hover zoom is pointer-only: on a touch screen :hover sticks after a tap. */
-  .tile .art img { transition: transform var(--dur) var(--ease); }
-  .tile:focus-visible .art img { transform: scale(1.06); }
-  @media (hover: hover) {
-    .tile:hover .art img { transform: scale(1.06); }
-  }
-
-  /* ---- list layout: a small poster on the left, one row per item ---- */
-  .grid { flex: 1; min-height: 0; display: grid; gap: min(10px, 2.4cqh); overflow: hidden; }
+  .grid { flex: 1; min-height: 0; display: grid; gap: 10px; overflow: hidden; }
+  .grid.posters { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); grid-auto-rows: minmax(0, 1fr); }
   .grid.list { grid-template-columns: 1fr; grid-auto-rows: min-content; align-content: start; overflow: auto; }
-  .list .row { align-items: center; gap: min(11px, 3cqw); padding: min(6px, 1.6cqh) min(4px, 1cqw); border-radius: 12px; }
-  .list .row:active { background: rgba(255,255,255,.06); }
-  .list .art { position: relative; flex: none; width: min(44px, 11cqw); aspect-ratio: 2 / 3; border-radius: 9px; overflow: hidden; background: rgba(255,255,255,.06); }
-  .list .art img { width: 100%; height: 100%; object-fit: cover; display: block; transition: transform var(--dur) var(--ease); }
-  .list .row:focus-visible .art img { transform: scale(1.06); }
-  @media (hover: hover) {
-    .list .row:hover .art img { transform: scale(1.06); }
-  }
+
+  .it { min-width: 0; min-height: 0; display: flex; border-radius: 14px; overflow: hidden; color: inherit; text-decoration: none; -webkit-tap-highlight-color: transparent; }
+  .it:active { opacity: .82; }
+
+  /* Posters: artwork fills the tile, words sit on a scrim at the bottom. */
+  .posters .it { position: relative; flex-direction: column; justify-content: flex-end; background: rgba(255,255,255,.05); }
+  .posters .art { position: absolute; inset: 0; }
+  .posters .art img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .posters .blank { width: 100%; height: 100%; display: grid; place-items: center; color: var(--muted); }
+  .posters .txt { position: relative; padding: 26px 9px 8px; background: linear-gradient(180deg, transparent, rgba(6,8,14,.55) 34%, rgba(6,8,14,.92)); }
+  .posters .t { font-weight: 600; font-size: .92em; line-height: 1.2; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; text-shadow: 0 1px 2px rgba(0,0,0,.55); }
+  .posters .s, .posters .d { color: rgba(255,255,255,.8); font-size: .78em; line-height: 1.35; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* The release line ("Available Online Tue, Nov 17") is longer than a date, so
+     in a poster tile it wraps to a second line instead of losing the point. */
+  .posters .d { white-space: normal; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
+  .posters .d { opacity: .8; }
+
+  /* List: a small poster on the left, one row per item. */
+  .list .it { align-items: center; gap: 11px; padding: 6px; }
+  .list .it:active { background: rgba(255,255,255,.06); }
+  .list .art { position: relative; flex: none; width: 44px; height: 64px; border-radius: 9px; overflow: hidden; background: rgba(255,255,255,.06); }
+  .list .art img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .list .blank { width: 100%; height: 100%; display: grid; place-items: center; color: var(--muted); }
   .list .txt { min-width: 0; flex: 1; }
-  .list .t { font-weight: 600; font-size: min(1em, 2.9cqw); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .list .s { color: var(--muted); font-size: min(.86em, 2.5cqw); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .list .d { color: var(--muted); font-size: min(.82em, 2.4cqw); margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .list .t { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .list .s { color: var(--muted); font-size: .86em; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .list .d { color: var(--muted); font-size: .82em; margin-top: 1px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
+  .src, .rate { position: absolute; top: 6px; font-size: .7em; font-weight: 600; padding: 2px 6px; border-radius: 7px; line-height: 1.5; }
+  .src { left: 6px; background: var(--src); color: #071018; }
+  .rate { right: 6px; background: rgba(6,8,14,.62); color: #fff; font-weight: 500; }
+  .list .src, .list .rate { display: none; }
   .tight .none { font-size: .85em; }
-  .tight .hero .t { -webkit-line-clamp: 2; }
 </style>
